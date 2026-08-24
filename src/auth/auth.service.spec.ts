@@ -15,6 +15,7 @@ describe("AuthService", () => {
 
   const APP_USER_ID = "u-1111-1111-1111-111111111111";
   const ATHLETE_ID = "a-2222-2222-2222-222222222222";
+  const COACH_ID = "c-3333-3333-3333-333333333333";
 
   beforeEach(async () => {
     prisma = { app_user: { findUnique: jest.fn() } };
@@ -158,6 +159,64 @@ describe("AuthService", () => {
         expect.objectContaining({ where: { email: "test@ekvara.fr" } }),
       );
     });
+
+    it("compte sans athlete NI coach_profile -> UnauthorizedException (compte orphelin)", async () => {
+      const passwordHash = await argon2.hash("bon-mot-de-passe", { type: argon2.argon2id });
+      prisma.app_user.findUnique.mockResolvedValue({
+        id: APP_USER_ID,
+        password_hash: passwordHash,
+        athlete: null,
+        coach_profile: null,
+      });
+
+      await expect(
+        service.login({ email: "test@ekvara.fr", password: "bon-mot-de-passe" }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it("coach-only -> token {sub, coachId} sans athleteId, athlete=null dans la réponse", async () => {
+      const passwordHash = await argon2.hash("bon-mot-de-passe", { type: argon2.argon2id });
+      prisma.app_user.findUnique.mockResolvedValue({
+        id: APP_USER_ID,
+        password_hash: passwordHash,
+        athlete: null,
+        coach_profile: { id: COACH_ID },
+      });
+
+      const { token, athlete } = await service.login({
+        email: "test@ekvara.fr",
+        password: "bon-mot-de-passe",
+      });
+
+      expect(athlete).toBeNull();
+      expect(athletesService.findOne).not.toHaveBeenCalled();
+      const decoded = jwtService.verify(token);
+      expect(decoded.sub).toBe(APP_USER_ID);
+      expect(decoded.coachId).toBe(COACH_ID);
+      expect(decoded.athleteId).toBeUndefined();
+    });
+
+    it("utilisateur hybride (athlete + coach_profile) -> token {sub, athleteId, coachId}", async () => {
+      const passwordHash = await argon2.hash("bon-mot-de-passe", { type: argon2.argon2id });
+      prisma.app_user.findUnique.mockResolvedValue({
+        id: APP_USER_ID,
+        password_hash: passwordHash,
+        athlete: { id: ATHLETE_ID },
+        coach_profile: { id: COACH_ID },
+      });
+      athletesService.findOne.mockResolvedValue({ id: ATHLETE_ID });
+
+      const { token, athlete } = await service.login({
+        email: "test@ekvara.fr",
+        password: "bon-mot-de-passe",
+      });
+
+      expect(athlete).toEqual({ id: ATHLETE_ID });
+      const decoded = jwtService.verify(token);
+      expect(decoded.sub).toBe(APP_USER_ID);
+      expect(decoded.athleteId).toBe(ATHLETE_ID);
+      expect(decoded.coachId).toBe(COACH_ID);
+    });
   });
 
   describe("getMe", () => {
@@ -168,6 +227,12 @@ describe("AuthService", () => {
 
       expect(result).toEqual({ id: ATHLETE_ID });
       expect(athletesService.findOne).toHaveBeenCalledWith(ATHLETE_ID);
+    });
+
+    it("sans athleteId (coach-only) -> UnauthorizedException, sans appeler AthletesService.findOne(undefined)", () => {
+      // getMe() est synchrone : elle lève directement, pas de Promise rejetée.
+      expect(() => service.getMe(undefined)).toThrow(UnauthorizedException);
+      expect(athletesService.findOne).not.toHaveBeenCalled();
     });
   });
 });

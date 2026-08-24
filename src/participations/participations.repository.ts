@@ -38,8 +38,10 @@ export type ParticipationWithCompetition = Prisma.participationGetPayload<{
 
 // Convention métier interne (le schéma ne définit pas d'enum pour `statut`) :
 // ces valeurs désignent une participation qui ne doit plus être considérée comme
-// active, notamment pour le calcul de la "prochaine compétition".
-const INACTIVE_PARTICIPATION_STATUSES = ["annule", "retire"];
+// active, notamment pour le calcul de la "prochaine compétition". Exportée
+// pour être réutilisée telle quelle par CoachDashboardRepository (batch),
+// jamais redupliquée en dur ailleurs.
+export const INACTIVE_PARTICIPATION_STATUSES = ["annule", "retire"];
 
 @Injectable()
 export class ParticipationsRepository {

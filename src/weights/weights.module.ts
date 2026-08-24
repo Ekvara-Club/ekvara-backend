@@ -9,5 +9,10 @@ import { WeightsRepository } from "./weights.repository";
   imports: [CompetitionsModule, AuthGuardsModule],
   controllers: [WeightsController],
   providers: [WeightsService, WeightsRepository],
+  // WeightsService.createWeightTarget/getWeightSummary sont réutilisés tels
+  // quels par CoachAthleteWeightsController (voir ticket "Pilotage individuel
+  // Coach") : mêmes méthodes, même comportement, jamais un CoachWeightsService
+  // parallèle qui copierait cette logique.
+  exports: [WeightsService],
 })
 export class WeightsModule {}

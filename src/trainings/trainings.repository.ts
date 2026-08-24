@@ -2,11 +2,20 @@ import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { training_session } from "../../generated/prisma/client";
 
+// Valeur canonique d'un statut "annulé" — exportée pour que
+// CoachTrainingsRepository.cancel() ÉCRIVE exactement la même chaîne que
+// celle utilisée pour FILTRER (INACTIVE_TRAINING_STATUSES ci-dessous),
+// jamais une chaîne "annule" redupliquée en dur au risque de diverger un
+// jour entre écriture et lecture.
+export const CANCELLED_TRAINING_STATUS = "annule";
+
 // Convention métier interne (le schéma ne définit pas d'enum pour `statut`) :
 // ces valeurs désignent une séance qui ne doit plus être considérée comme
 // éligible pour le "prochain entraînement". Même approche que
-// INACTIVE_PARTICIPATION_STATUSES dans le module participations.
-const INACTIVE_TRAINING_STATUSES = ["annule"];
+// INACTIVE_PARTICIPATION_STATUSES dans le module participations. Exportée
+// pour être réutilisée telle quelle par CoachDashboardRepository (batch),
+// jamais redupliquée en dur ailleurs.
+export const INACTIVE_TRAINING_STATUSES = [CANCELLED_TRAINING_STATUS];
 
 @Injectable()
 export class TrainingsRepository {

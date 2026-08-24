@@ -64,4 +64,110 @@ describe("ExercisesRepository (intégration Postgres)", () => {
 
     expect(result).toBeNull();
   });
+
+  // ticket "Bibliothèque d'exercices Coach" §26 : visibilité athlète, contre
+  // la vraie base — G = global, X = coach assigné à A, Y = coach assigné à
+  // B. Fixtures jetables (coach + 2 athlètes) nettoyées ici, séparément des
+  // exercices seedés pour le développement.
+  describe("visibilité athlète (exercices coach)", () => {
+    const createdUserIds: string[] = [];
+    const coachExerciseIds: string[] = [];
+
+    afterEach(async () => {
+      if (coachExerciseIds.length > 0) {
+        await prisma.exercise.deleteMany({ where: { id: { in: coachExerciseIds } } });
+        coachExerciseIds.length = 0;
+      }
+      if (createdUserIds.length > 0) {
+        await prisma.app_user.deleteMany({ where: { id: { in: createdUserIds } } });
+        createdUserIds.length = 0;
+      }
+    });
+
+    async function makeCoach(): Promise<string> {
+      const user = await prisma.app_user.create({
+        data: { email: `test-fixture-ex-coach-${runId}-${Date.now()}-${Math.random()}@test.fr`, nom: "Coach", prenom: "F" },
+      });
+      createdUserIds.push(user.id);
+      const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
+      return profile.id;
+    }
+
+    async function makeAthlete(): Promise<string> {
+      const user = await prisma.app_user.create({
+        data: { email: `test-fixture-ex-athlete-${runId}-${Date.now()}-${Math.random()}@test.fr`, nom: "N", prenom: "P" },
+      });
+      createdUserIds.push(user.id);
+      const athlete = await prisma.athlete.create({ data: { user_id: user.id } });
+      return athlete.id;
+    }
+
+    it("G visible par A et B ; X (assigné à A) visible par A seulement ; Y (assigné à B) visible par B seulement", async () => {
+      const coachId = await makeCoach();
+      const athleteA = await makeAthlete();
+      const athleteB = await makeAthlete();
+
+      const x = await prisma.exercise.create({
+        data: { titre: `X coach ${runId}`, created_by_coach_id: coachId },
+      });
+      coachExerciseIds.push(x.id);
+      await prisma.coach_exercise_assignment.create({ data: { exercise_id: x.id, athlete_id: athleteA } });
+
+      const y = await prisma.exercise.create({
+        data: { titre: `Y coach ${runId}`, created_by_coach_id: coachId },
+      });
+      coachExerciseIds.push(y.id);
+      await prisma.coach_exercise_assignment.create({ data: { exercise_id: y.id, athlete_id: athleteB } });
+
+      const forA = await repository.findMany(athleteA);
+      const forB = await repository.findMany(athleteB);
+
+      const titlesForA = forA.map((e) => e.titre);
+      const titlesForB = forB.map((e) => e.titre);
+
+      expect(titlesForA).toContain(titreA); // globaux toujours visibles
+      expect(titlesForA).toContain(`X coach ${runId}`);
+      expect(titlesForA).not.toContain(`Y coach ${runId}`);
+
+      expect(titlesForB).toContain(titreA);
+      expect(titlesForB).toContain(`Y coach ${runId}`);
+      expect(titlesForB).not.toContain(`X coach ${runId}`);
+    });
+
+    it("athlète sans aucune publication -> uniquement les exercices globaux", async () => {
+      const coachId = await makeCoach();
+      const athleteC = await makeAthlete();
+      const x = await prisma.exercise.create({ data: { titre: `X isolé ${runId}`, created_by_coach_id: coachId } });
+      coachExerciseIds.push(x.id);
+      // Pas d'assignment pour athleteC.
+
+      const result = await repository.findMany(athleteC);
+
+      expect(result.map((e) => e.titre)).not.toContain(`X isolé ${runId}`);
+      expect(result.map((e) => e.titre)).toContain(titreA); // toujours les globaux
+    });
+
+    it("findById respecte la même visibilité : X inaccessible en detail pour un athlète non assigné", async () => {
+      const coachId = await makeCoach();
+      const athleteA = await makeAthlete();
+      const athleteOther = await makeAthlete();
+      const x = await prisma.exercise.create({ data: { titre: `X detail ${runId}`, created_by_coach_id: coachId } });
+      coachExerciseIds.push(x.id);
+      await prisma.coach_exercise_assignment.create({ data: { exercise_id: x.id, athlete_id: athleteA } });
+
+      expect((await repository.findById(x.id, athleteA))?.titre).toBe(`X detail ${runId}`);
+      expect(await repository.findById(x.id, athleteOther)).toBeNull();
+    });
+
+    it("coach-only (athleteId absent) -> ne voit jamais un exercice coach, uniquement les globaux", async () => {
+      const coachId = await makeCoach();
+      const x = await prisma.exercise.create({ data: { titre: `X coach-only ${runId}`, created_by_coach_id: coachId } });
+      coachExerciseIds.push(x.id);
+
+      const result = await repository.findMany(undefined);
+
+      expect(result.map((e) => e.titre)).not.toContain(`X coach-only ${runId}`);
+      expect(result.map((e) => e.titre)).toContain(titreA);
+    });
+  });
 });

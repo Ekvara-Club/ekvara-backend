@@ -182,6 +182,19 @@ describe("AuthController (HTTP)", () => {
         .expect(401);
     });
 
+    it("token coach-only (pas d'athleteId) -> 401 (jamais 200 avec un corps vide : voir AuthService.getMe)", async () => {
+      service.getMe.mockRejectedValue(new UnauthorizedException("Aucune session athlète"));
+      const token = signTestToken({ sub: "u-coach-1", coachId: "c-1111-1111-1111-111111111111" });
+
+      // 401 réutilise exactement le chemin déjà géré par AuthMeResponse côté
+      // EkvaraFrontend (status 401 -> null) : zéro changement frontend requis.
+      await request(app.getHttpServer())
+        .get("/auth/me")
+        .set("Cookie", authCookieHeader(token))
+        .expect(401);
+      expect(service.getMe).toHaveBeenCalledWith(undefined);
+    });
+
     it("après suppression du cookie côté client, une requête sans cookie -> 401 (le JWT n'est pas révoqué côté serveur)", async () => {
       // Illustre explicitement que logout n'invalide pas un token déjà émis :
       // un token signé avant logout resterait valide s'il était rejoué avec

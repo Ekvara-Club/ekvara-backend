@@ -8,5 +8,11 @@ import { GoalsRepository } from "./goals.repository";
   imports: [AuthGuardsModule],
   controllers: [GoalsController],
   providers: [GoalsService, GoalsRepository],
+  // GoalsService (createGoal/findAllForAthlete/addStep/updateStep/
+  // updateStatus) est réutilisé tel quel par CoachAthleteGoalsController
+  // (voir ticket "Pilotage individuel Coach") : mêmes méthodes, y compris
+  // assertGoalBelongsToAthlete/stepBelongsToGoal internes, jamais recodées
+  // côté coach.
+  exports: [GoalsService],
 })
 export class GoalsModule {}

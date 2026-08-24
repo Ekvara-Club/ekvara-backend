@@ -4,7 +4,11 @@ import { CreateWeightLogDto } from "./dto/create-weight-log.dto";
 import { CreateWeightTargetDto } from "./dto/create-weight-target.dto";
 import { WeightsRepository } from "./weights.repository";
 
-const REFERENCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// Exportée pour que CoachDashboardService puisse calculer `weeklyChange` en
+// batch (fenêtre "il y a une semaine" par athlète depuis un historique déjà
+// chargé en mémoire) avec exactement le même seuil que getWeightSummary,
+// jamais une valeur redupliquée en dur.
+export const REFERENCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class WeightsService {
@@ -81,19 +85,14 @@ export class WeightsService {
         }
       : null;
 
-    const differenceToTarget =
-      currentWeight !== null && target !== null ? round2(currentWeight - target.weight) : null;
-
-    let weeklyChange: number | null = null;
-    if (latestLog && currentWeight !== null) {
+    let referenceWeight: number | null = null;
+    if (latestLog) {
       const cutoff = new Date(latestLog.date_mesure.getTime() - REFERENCE_WINDOW_MS);
       const referenceLog = await this.weightsRepository.findReferenceWeightLog(athleteId, cutoff);
-      if (referenceLog) {
-        weeklyChange = round2(currentWeight - referenceLog.valeur_kg.toNumber());
-      }
+      referenceWeight = referenceLog ? referenceLog.valeur_kg.toNumber() : null;
     }
 
-    return { currentWeight, measuredAt, target, differenceToTarget, weeklyChange };
+    return computeWeightSummary(currentWeight, measuredAt, target, referenceWeight);
   }
 
   private async assertAthleteExists(athleteId: string): Promise<void> {
@@ -106,6 +105,39 @@ export class WeightsService {
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+export interface WeightTargetView {
+  weight: number;
+  targetDate: Date | null;
+  competitionId: string | null;
+}
+
+export interface WeightSummaryView {
+  currentWeight: number | null;
+  measuredAt: Date | null;
+  target: WeightTargetView | null;
+  differenceToTarget: number | null;
+  weeklyChange: number | null;
+}
+
+// Logique pure, sans dépendance Prisma/Nest (même principe que
+// MetricsService.compareMeasurements) : différence à l'objectif et variation
+// hebdomadaire à partir de valeurs déjà résolues. Seule source de vérité de
+// cette formule — réutilisée telle quelle par CoachDashboardService pour ne
+// jamais recalculer differenceToTarget/weeklyChange différemment en batch.
+export function computeWeightSummary(
+  currentWeight: number | null,
+  measuredAt: Date | null,
+  target: WeightTargetView | null,
+  referenceWeight: number | null,
+): WeightSummaryView {
+  const differenceToTarget =
+    currentWeight !== null && target !== null ? round2(currentWeight - target.weight) : null;
+  const weeklyChange =
+    currentWeight !== null && referenceWeight !== null ? round2(currentWeight - referenceWeight) : null;
+
+  return { currentWeight, measuredAt, target, differenceToTarget, weeklyChange };
 }
 
 function toWeightLogView(log: { id: string; valeur_kg: { toNumber(): number }; date_mesure: Date; note: string | null }) {

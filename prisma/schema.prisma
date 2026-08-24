@@ -18,27 +18,32 @@ model app_user {
   updated_at         DateTime?            @default(now()) @db.Timestamp(6)
   athlete            athlete?
   metric_measurement metric_measurement[]
+  coach_profile      coach_profile?
 }
 
 model athlete {
-  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id            String               @unique @db.Uuid
-  club_id            String?              @db.Uuid
-  categorie_age      String?              @db.VarChar(50)
-  genre              String?              @db.VarChar(30)
-  grade              String?              @db.VarChar(100)
-  date_naissance     DateTime?            @db.Date
-  niveau_sportif     String?              @db.VarChar(50)
-  created_at         DateTime?            @default(now()) @db.Timestamp(6)
-  updated_at         DateTime?            @default(now()) @db.Timestamp(6)
-  club               club?                @relation(fields: [club_id], references: [id], onUpdate: NoAction)
-  app_user           app_user             @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  athlete_goal       athlete_goal[]
-  metric_measurement metric_measurement[]
-  participation      participation[]
-  training_session   training_session[]
-  weight_log         weight_log[]
-  weight_target      weight_target[]
+  id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                   String                      @unique @db.Uuid
+  club_id                   String?                     @db.Uuid
+  categorie_age             String?                     @db.VarChar(50)
+  genre                     String?                     @db.VarChar(30)
+  grade                     String?                     @db.VarChar(100)
+  date_naissance            DateTime?                   @db.Date
+  niveau_sportif            String?                     @db.VarChar(50)
+  created_at                DateTime?                   @default(now()) @db.Timestamp(6)
+  updated_at                DateTime?                   @default(now()) @db.Timestamp(6)
+  club                      club?                       @relation(fields: [club_id], references: [id], onUpdate: NoAction)
+  app_user                  app_user                    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete_goal              athlete_goal[]
+  metric_measurement        metric_measurement[]
+  participation             participation[]
+  training_session          training_session[]
+  weight_log                weight_log[]
+  weight_target             weight_target[]
+  coach_athlete             coach_athlete[]
+  coach_group_athlete       coach_group_athlete[]
+  coach_training_assignment coach_training_assignment[]
+  coach_exercise_assignment coach_exercise_assignment[]
 }
 
 model athlete_goal {
@@ -58,32 +63,33 @@ model athlete_goal {
 }
 
 model club {
-  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nom        String    @db.VarChar(255)
-  pays       String?   @db.VarChar(100)
-  ville      String?   @db.VarChar(100)
-  created_at DateTime? @default(now()) @db.Timestamp(6)
-  updated_at DateTime? @default(now()) @db.Timestamp(6)
-  athlete    athlete[]
+  id            String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nom           String          @db.VarChar(255)
+  pays          String?         @db.VarChar(100)
+  ville         String?         @db.VarChar(100)
+  created_at    DateTime?       @default(now()) @db.Timestamp(6)
+  updated_at    DateTime?       @default(now()) @db.Timestamp(6)
+  athlete       athlete[]
+  coach_profile coach_profile[]
 }
 
 model competition {
-  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nom            String               @db.VarChar(255)
-  organisateur   String?              @db.VarChar(255)
-  date_debut     DateTime             @db.Date
-  date_fin       DateTime?            @db.Date
-  lieu           String?              @db.VarChar(255)
-  ville          String?              @db.VarChar(100)
-  pays           String?              @db.VarChar(100)
-  niveau         String?              @db.VarChar(50)
-  saison         String?              @db.VarChar(20)
-  created_at     DateTime?            @default(now()) @db.Timestamp(6)
-  updated_at     DateTime?            @default(now()) @db.Timestamp(6)
-  participation  participation[]
-  weight_target  weight_target[]
-  sources        competition_source[]
-  entries        competition_entry[]
+  id            String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nom           String               @db.VarChar(255)
+  organisateur  String?              @db.VarChar(255)
+  date_debut    DateTime             @db.Date
+  date_fin      DateTime?            @db.Date
+  lieu          String?              @db.VarChar(255)
+  ville         String?              @db.VarChar(100)
+  pays          String?              @db.VarChar(100)
+  niveau        String?              @db.VarChar(50)
+  saison        String?              @db.VarChar(20)
+  created_at    DateTime?            @default(now()) @db.Timestamp(6)
+  updated_at    DateTime?            @default(now()) @db.Timestamp(6)
+  participation participation[]
+  weight_target weight_target[]
+  sources       competition_source[]
+  entries       competition_entry[]
 }
 
 // Références externes d'une competition canonique EKVARA : une même
@@ -92,31 +98,31 @@ model competition {
 // tout le reste d'EKVARA (participation, weight_target) reste exclusivement
 // competition.id — jamais source/source_external_id.
 model competition_source {
-  id                 String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  competition_id     String      @db.Uuid
-  competition        competition @relation(fields: [competition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  competition_id String      @db.Uuid
+  competition    competition @relation(fields: [competition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  source             String      @db.VarChar(50)
-  source_external_id String      @db.VarChar(255)
-  source_url         String?     @db.VarChar(500)
+  source             String  @db.VarChar(50)
+  source_external_id String  @db.VarChar(255)
+  source_url         String? @db.VarChar(500)
 
   // Valeurs brutes telles que fournies par CETTE source, même si elles
   // diffèrent de la valeur canonique retenue sur competition (voir politique
   // de fusion "combler les champs null uniquement" dans CompetitionsRepository).
-  raw_nom            String?     @db.VarChar(255)
-  raw_organisateur   String?     @db.VarChar(255)
-  raw_lieu           String?     @db.VarChar(255)
-  raw_ville          String?     @db.VarChar(100)
-  raw_pays           String?     @db.VarChar(100)
-  raw_niveau         String?     @db.VarChar(50)
+  raw_nom          String? @db.VarChar(255)
+  raw_organisateur String? @db.VarChar(255)
+  raw_lieu         String? @db.VarChar(255)
+  raw_ville        String? @db.VarChar(100)
+  raw_pays         String? @db.VarChar(100)
+  raw_niveau       String? @db.VarChar(50)
 
   // "safe" : rattachée automatiquement par matchCompetitions() ; "manual" :
   // rattachement humain futur ; null : source primaire d'une competition
   // jamais rapprochée d'une autre (cas normal de la grande majorité des lignes).
-  match_confidence   String?     @db.VarChar(20)
+  match_confidence String? @db.VarChar(20)
 
-  created_at         DateTime?   @default(now()) @db.Timestamp(6)
-  updated_at         DateTime?   @default(now()) @db.Timestamp(6)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @default(now()) @db.Timestamp(6)
 
   @@unique([source, source_external_id])
   @@index([competition_id])
@@ -137,24 +143,24 @@ model competition_source {
 // la clé, numéro de ligne, nom normalisé agressivement) sans preuve de
 // stabilité de ces signaux côté source.
 model competition_entry {
-  id                         String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  competition_id             String      @db.Uuid
-  competition                competition @relation(fields: [competition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  competition_id String      @db.Uuid
+  competition    competition @relation(fields: [competition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  source                     String      @db.VarChar(50)
-  source_category_raw_label  String      @db.VarChar(255)
+  source                    String @db.VarChar(50)
+  source_category_raw_label String @db.VarChar(255)
 
-  age_category                String?     @db.VarChar(50)
-  gender                      String?     @db.VarChar(20)
-  weight_category             String?     @db.VarChar(50)
+  age_category    String? @db.VarChar(50)
+  gender          String? @db.VarChar(20)
+  weight_category String? @db.VarChar(50)
 
-  participant_name           String      @db.VarChar(255)
-  club                        String?     @db.VarChar(255)
-  league                      String?     @db.VarChar(255)
-  country                     String?     @db.VarChar(100)
+  participant_name String  @db.VarChar(255)
+  club             String? @db.VarChar(255)
+  league           String? @db.VarChar(255)
+  country          String? @db.VarChar(100)
 
-  created_at                 DateTime?   @default(now()) @db.Timestamp(6)
-  updated_at                 DateTime?   @default(now()) @db.Timestamp(6)
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @default(now()) @db.Timestamp(6)
 
   @@unique([competition_id, source, participant_name, source_category_raw_label])
   @@index([competition_id])
@@ -162,16 +168,64 @@ model competition_entry {
 }
 
 model exercise {
-  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  titre           String    @db.VarChar(255)
-  type_exercice   String?   @db.VarChar(50)
-  panel_technique String?   @db.VarChar(100)
-  niveau          String?   @db.VarChar(50)
-  description     String?
-  video_url       String?
-  gratuit         Boolean?  @default(true)
-  created_at      DateTime? @default(now()) @db.Timestamp(6)
-  updated_at      DateTime? @default(now()) @db.Timestamp(6)
+  id                          String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  titre                       String                        @db.VarChar(255)
+  type_exercice               String?                       @db.VarChar(50)
+  panel_technique             String?                       @db.VarChar(100)
+  niveau                      String?                       @db.VarChar(50)
+  description                 String?
+  video_url                   String?
+  gratuit                     Boolean?                      @default(true)
+  // Nullable, additif : NULL = exercice système/global (comportement
+  // historique inchangé — c'est la valeur de TOUTES les lignes existantes
+  // avant ce ticket, jamais réécrite). Non-null = exercice créé par un
+  // coach, visible uniquement par les athlètes assignés (voir
+  // coach_exercise_assignment) — jamais par simple présence dans le
+  // catalogue. `gratuit` reste un champ dormant, sans lien avec cette
+  // colonne : aucune preuve qu'il gouverne une quelconque visibilité
+  // aujourd'hui (voir rapport d'audit), donc pas réutilisé ici.
+  created_by_coach_id         String?                       @db.Uuid
+  created_at                  DateTime?                     @default(now()) @db.Timestamp(6)
+  updated_at                  DateTime?                     @default(now()) @db.Timestamp(6)
+  coach_profile               coach_profile?                @relation(fields: [created_by_coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  coach_exercise_assignment   coach_exercise_assignment[]
+  coach_exercise_group_source coach_exercise_group_source[]
+
+  @@index([created_by_coach_id])
+}
+
+// Publication d'un exercice coach vers UN athlète (visibilité, pas
+// propriété — voir exercise.created_by_coach_id pour la propriété). SNAPSHOT
+// au moment de la publication (ticket §12), même philosophie que
+// coach_training_assignment : un groupe modifié après coup ne change jamais
+// rétroactivement les publications déjà faites, seul un nouveau PUT
+// .../assignments recalcule.
+model coach_exercise_assignment {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  exercise_id String    @db.Uuid
+  athlete_id  String    @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  exercise    exercise  @relation(fields: [exercise_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete     athlete   @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([exercise_id, athlete_id])
+  @@index([athlete_id])
+}
+
+// Provenance "cet exercice a été publié (aussi) via ce groupe" — même rôle
+// que coach_training_group_source : reconstitue l'affichage "Publié à : ...",
+// jamais utilisée comme preuve d'autorisation. Cascade sur suppression du
+// groupe : la provenance disparaît, les assignments déjà publiées restent
+// (ticket §18).
+model coach_exercise_group_source {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  exercise_id String      @db.Uuid
+  group_id    String      @db.Uuid
+  created_at  DateTime?   @default(now()) @db.Timestamp(6)
+  exercise    exercise    @relation(fields: [exercise_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  coach_group coach_group @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([exercise_id, group_id])
 }
 
 model goal_step {
@@ -202,14 +256,14 @@ model metric_measurement {
 }
 
 model metric_type {
-  id                     String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  code                   String               @unique @db.VarChar(100)
-  nom                    String               @db.VarChar(255)
-  unite                  String?              @db.VarChar(50)
-  description            String?
-  improvement_direction  String?              @db.VarChar(10)
-  created_at             DateTime?            @default(now()) @db.Timestamp(6)
-  metric_measurement     metric_measurement[]
+  id                    String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code                  String               @unique @db.VarChar(100)
+  nom                   String               @db.VarChar(255)
+  unite                 String?              @db.VarChar(50)
+  description           String?
+  improvement_direction String?              @db.VarChar(10)
+  created_at            DateTime?            @default(now()) @db.Timestamp(6)
+  metric_measurement    metric_measurement[]
 }
 
 model participation {
@@ -250,6 +304,13 @@ model training_session {
   updated_at  DateTime? @default(now()) @db.Timestamp(6)
   athlete     athlete   @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
+  // Optionnel : présent uniquement si cette ligne a été GÉNÉRÉE par une
+  // séance collective coach (voir coach_training_session). Une ligne créée
+  // par l'athlète lui-même via POST /athletes/:id/trainings n'a pas de
+  // coach_training_assignment — training_session reste par ailleurs
+  // strictement inchangé (voir ticket "Entraînements collectifs Coach").
+  coach_training_assignment coach_training_assignment?
+
   @@index([athlete_id, date_debut], map: "idx_training_session_athlete_date")
 }
 
@@ -276,4 +337,144 @@ model weight_target {
   updated_at     DateTime?    @default(now()) @db.Timestamp(6)
   athlete        athlete      @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   competition    competition? @relation(fields: [competition_id], references: [id], onUpdate: NoAction)
+}
+
+// Profil coach d'un app_user (miroir d'`athlete` : identité — nom, prénom,
+// email — reste exclusivement sur app_user, jamais dupliquée ici). Relation
+// 1:1 stricte via user_id unique, comme athlete.user_id. Un app_user peut
+// posséder à la fois athlete et coach_profile (utilisateur hybride) : ce
+// sont deux profils indépendants sur la même identité, pas un rôle exclusif.
+model coach_profile {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                String                   @unique @db.Uuid
+  club_id                String?                  @db.Uuid
+  created_at             DateTime?                @default(now()) @db.Timestamp(6)
+  updated_at             DateTime?                @default(now()) @db.Timestamp(6)
+  app_user               app_user                 @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  club                   club?                    @relation(fields: [club_id], references: [id], onUpdate: NoAction)
+  athletes               coach_athlete[]
+  groups                 coach_group[]
+  coach_training_session coach_training_session[]
+  exercises              exercise[]
+}
+
+// Source de vérité UNIQUE de l'autorisation coach -> athlète (voir
+// CoachAthleteAccessGuard). Jamais club_id, jamais coach_group : un athlète
+// dans un groupe d'un coach doit toujours avoir une ligne coach_athlete
+// correspondante (contrôlé côté service à l'ajout en groupe, pas par une
+// contrainte DB — voir coach_group_athlete).
+model coach_athlete {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  coach_id      String        @db.Uuid
+  athlete_id    String        @db.Uuid
+  created_at    DateTime?     @default(now()) @db.Timestamp(6)
+  coach_profile coach_profile @relation(fields: [coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete       athlete       @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([coach_id, athlete_id])
+  @@index([athlete_id])
+}
+
+// Groupe métier créé par un coach (ex. "Élite", "Juniors"). Unicité du nom
+// scoped par coach (deux coachs différents peuvent avoir chacun un groupe
+// "Élite"). Comparaison case-sensitive (comportement par défaut de l'index
+// unique Postgres sur VARCHAR) : aucune normalisation le -> pas de politique
+// de casse implicite non documentée pour ce MVP.
+model coach_group {
+  id                          String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  coach_id                    String                        @db.Uuid
+  name                        String                        @db.VarChar(255)
+  created_at                  DateTime?                     @default(now()) @db.Timestamp(6)
+  updated_at                  DateTime?                     @default(now()) @db.Timestamp(6)
+  coach_profile               coach_profile                 @relation(fields: [coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  members                     coach_group_athlete[]
+  coach_training_group_source coach_training_group_source[]
+  coach_exercise_group_source coach_exercise_group_source[]
+
+  @@unique([coach_id, name])
+}
+
+// Membership d'un athlète dans un coach_group. La DB seule ne peut pas
+// garantir que l'athlète appartient déjà à coach_athlete pour le coach
+// propriétaire du groupe (ce sont deux tables sans FK composite croisée
+// possible en Postgres/Prisma) : cette règle est vérifiée par
+// CoachGroupsService avant tout insert ici (voir §25/§26 du ticket).
+model coach_group_athlete {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  group_id    String      @db.Uuid
+  athlete_id  String      @db.Uuid
+  created_at  DateTime?   @default(now()) @db.Timestamp(6)
+  coach_group coach_group @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete     athlete     @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([group_id, athlete_id])
+  @@index([athlete_id])
+}
+
+// Séance collective créée par un coach : la définition CONCEPTUELLE d'une
+// séance ("Combat — Groupe Élite — vendredi 20h"). N'est jamais lue
+// directement par le frontend athlète — training_session (inchangé) reste
+// l'unique source consommée par athletes/:id/trainings. Une modification de
+// ce modèle est PROPAGÉE explicitement (transaction) vers chaque
+// training_session généré, via coach_training_assignment. Mêmes noms de
+// champs que training_session (titre/date_debut/...) : la propagation est
+// une copie champ à champ triviale à auditer, jamais une transformation.
+model coach_training_session {
+  id            String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  coach_id      String                        @db.Uuid
+  titre         String                        @db.VarChar(255)
+  type_seance   String?                       @db.VarChar(50)
+  sous_type     String?                       @db.VarChar(100)
+  date_debut    DateTime                      @db.Timestamp(6)
+  date_fin      DateTime?                     @db.Timestamp(6)
+  lieu          String?                       @db.VarChar(255)
+  niveau        String?                       @db.VarChar(50)
+  description   String?
+  statut        String?                       @default("prevu") @db.VarChar(30)
+  created_at    DateTime?                     @default(now()) @db.Timestamp(6)
+  updated_at    DateTime?                     @default(now()) @db.Timestamp(6)
+  coach_profile coach_profile                 @relation(fields: [coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  assignments   coach_training_assignment[]
+  group_sources coach_training_group_source[]
+
+  @@index([coach_id, date_debut])
+}
+
+// Lien entre une séance collective et CHAQUE training_session réellement
+// généré (une ligne training_session par athlète assigné — le modèle
+// athlete-facing reste 1 ligne = 1 athlète, inchangé). training_session_id
+// est unique : un training_session donné appartient au plus à UNE séance
+// collective. Source de vérité de "qui reçoit réellement" la séance —
+// jamais coach_training_group_source, qui n'est qu'une provenance.
+model coach_training_assignment {
+  id                        String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  coach_training_session_id String                 @db.Uuid
+  training_session_id       String                 @unique @db.Uuid
+  athlete_id                String                 @db.Uuid
+  created_at                DateTime?              @default(now()) @db.Timestamp(6)
+  coach_training_session    coach_training_session @relation(fields: [coach_training_session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  training_session          training_session       @relation(fields: [training_session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete                   athlete                @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([coach_training_session_id, athlete_id])
+  @@index([athlete_id])
+}
+
+// Provenance "cette séance a été assignée (aussi) via ce groupe", utilisée
+// uniquement pour reconstituer `assignments.groups` côté lecture et pour
+// recalculer le snapshot lors d'un remplacement complet des destinataires
+// (PUT .../assignments). Ne remplace jamais coach_training_assignment comme
+// preuve d'autorisation : SNAPSHOT au moment de l'assignation (voir ticket
+// §5) — si le groupe change de composition ensuite, ces lignes ne sont pas
+// réécrites automatiquement. Cascade sur suppression du groupe : la
+// provenance disparaît, la séance et les assignments restent (ticket §21).
+model coach_training_group_source {
+  id                        String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  coach_training_session_id String                 @db.Uuid
+  group_id                  String                 @db.Uuid
+  created_at                DateTime?              @default(now()) @db.Timestamp(6)
+  coach_training_session    coach_training_session @relation(fields: [coach_training_session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  coach_group               coach_group            @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([coach_training_session_id, group_id])
 }

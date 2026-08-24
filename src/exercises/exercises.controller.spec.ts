@@ -61,7 +61,7 @@ describe("ExercisesController (HTTP)", () => {
     expect(service.findAll).not.toHaveBeenCalled();
   });
 
-  it("GET /exercises avec authentification -> 200 et liste des exercices", async () => {
+  it("GET /exercises avec authentification -> 200 et liste des exercices, athleteId du JWT transmis au service", async () => {
     service.findAll.mockResolvedValue([exercise()]);
 
     const response = await request(app.getHttpServer())
@@ -70,6 +70,16 @@ describe("ExercisesController (HTTP)", () => {
       .expect(200);
 
     expect(response.body).toEqual([exercise()]);
+    expect(service.findAll).toHaveBeenCalledWith(ATHLETE_ID);
+  });
+
+  it("GET /exercises avec un token coach-only (pas d'athleteId) -> 200, service appelé avec athleteId undefined", async () => {
+    service.findAll.mockResolvedValue([exercise()]);
+    const coachOnlyCookie = authCookieHeader(signTestToken({ sub: "u-coach", coachId: "c-1111-1111-1111-111111111111" }));
+
+    await request(app.getHttpServer()).get("/exercises").set("Cookie", coachOnlyCookie).expect(200);
+
+    expect(service.findAll).toHaveBeenCalledWith(undefined);
   });
 
   it("GET /exercises avec authentification -> 200 et liste vide quand la table est vide", async () => {
@@ -97,7 +107,7 @@ describe("ExercisesController (HTTP)", () => {
       .expect(200);
 
     expect(response.body).toEqual(exercise());
-    expect(service.findOne).toHaveBeenCalledWith(EXERCISE_ID);
+    expect(service.findOne).toHaveBeenCalledWith(EXERCISE_ID, ATHLETE_ID);
   });
 
   it("GET /exercises/:id avec UUID invalide (authentifié) -> 400", async () => {

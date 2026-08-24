@@ -10,8 +10,11 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
+  // Deux frontends de dev distincts partagent ce backend : EkvaraFrontend
+  // (athlète, 5173) et EkvaraCoachFrontend (coach, 5174) — les deux origines
+  // doivent fonctionner simultanément, jamais l'une au lieu de l'autre.
   app.enableCors({
-    origin: "http://localhost:5173",
+    origin: ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   });

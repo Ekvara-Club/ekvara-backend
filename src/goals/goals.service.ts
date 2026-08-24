@@ -103,11 +103,24 @@ function toStepView(step: GoalStep) {
   };
 }
 
-function toGoalView(goal: GoalWithSteps) {
-  const steps = goal.goal_step;
+export interface GoalProgress {
+  completed: number;
+  total: number;
+  percentage: number | null;
+}
+
+// Logique pure (même principe que WeightsService.computeWeightSummary) :
+// seule source de vérité du pourcentage de progression d'un objectif,
+// réutilisée telle quelle par CoachDashboardService pour primaryGoal.
+export function computeGoalProgress(steps: { completed: boolean | null }[]): GoalProgress {
   const total = steps.length;
   const completed = steps.filter((step) => step.completed).length;
   const percentage = total === 0 ? null : Math.round((completed / total) * 100);
+  return { completed, total, percentage };
+}
+
+function toGoalView(goal: GoalWithSteps) {
+  const steps = goal.goal_step;
 
   return {
     id: goal.id,
@@ -116,7 +129,7 @@ function toGoalView(goal: GoalWithSteps) {
     description: goal.description,
     dateCible: goal.date_cible,
     statut: goal.statut,
-    progress: { completed, total, percentage },
+    progress: computeGoalProgress(steps),
     steps: steps.map(toStepView),
   };
 }
