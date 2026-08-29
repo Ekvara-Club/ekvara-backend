@@ -377,4 +377,27 @@ describe("CompetitionsRepository (intégration Postgres)", () => {
     const canonical = await prisma.competition.findUniqueOrThrow({ where: { id: first.competition.id } });
     expect(canonical.niveau).toBe("national");
   });
+
+  // Ticket "Sélection & préparation V1" §23 : recherche catalogue pour
+  // "+ Préparer une compétition" — ajout additif à findMany(), jamais un
+  // second catalogue.
+  describe("findMany(search) — ajout additif §23", () => {
+    it("filtre par nom, insensible à la casse, sans toucher le comportement par défaut", async () => {
+      const competition = await prisma.competition.create({
+        data: { nom: `Championnat Recherche Unique ${runId}`, date_debut: new Date() },
+      });
+      createdCompetitionIds.push(competition.id);
+
+      const matches = await repository.findMany("recherche unique");
+      expect(matches.some((c) => c.id === competition.id)).toBe(true);
+
+      const noMatches = await repository.findMany(`introuvable-${runId}`);
+      expect(noMatches).toHaveLength(0);
+
+      // Sans paramètre : comportement historique inchangé (toutes les
+      // competitions, y compris celle créée ici).
+      const all = await repository.findMany();
+      expect(all.some((c) => c.id === competition.id)).toBe(true);
+    });
+  });
 });

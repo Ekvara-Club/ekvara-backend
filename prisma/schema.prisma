@@ -22,28 +22,29 @@ model app_user {
 }
 
 model athlete {
-  id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                   String                      @unique @db.Uuid
-  club_id                   String?                     @db.Uuid
-  categorie_age             String?                     @db.VarChar(50)
-  genre                     String?                     @db.VarChar(30)
-  grade                     String?                     @db.VarChar(100)
-  date_naissance            DateTime?                   @db.Date
-  niveau_sportif            String?                     @db.VarChar(50)
-  created_at                DateTime?                   @default(now()) @db.Timestamp(6)
-  updated_at                DateTime?                   @default(now()) @db.Timestamp(6)
-  club                      club?                       @relation(fields: [club_id], references: [id], onUpdate: NoAction)
-  app_user                  app_user                    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  athlete_goal              athlete_goal[]
-  metric_measurement        metric_measurement[]
-  participation             participation[]
-  training_session          training_session[]
-  weight_log                weight_log[]
-  weight_target             weight_target[]
-  coach_athlete             coach_athlete[]
-  coach_group_athlete       coach_group_athlete[]
-  coach_training_assignment coach_training_assignment[]
-  coach_exercise_assignment coach_exercise_assignment[]
+  id                            String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                       String                          @unique @db.Uuid
+  club_id                       String?                         @db.Uuid
+  categorie_age                 String?                         @db.VarChar(50)
+  genre                         String?                         @db.VarChar(30)
+  grade                         String?                         @db.VarChar(100)
+  date_naissance                DateTime?                       @db.Date
+  niveau_sportif                String?                         @db.VarChar(50)
+  created_at                    DateTime?                       @default(now()) @db.Timestamp(6)
+  updated_at                    DateTime?                       @default(now()) @db.Timestamp(6)
+  club                          club?                           @relation(fields: [club_id], references: [id], onUpdate: NoAction)
+  app_user                      app_user                        @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete_goal                  athlete_goal[]
+  metric_measurement            metric_measurement[]
+  participation                 participation[]
+  training_session              training_session[]
+  weight_log                    weight_log[]
+  weight_target                 weight_target[]
+  coach_athlete                 coach_athlete[]
+  coach_group_athlete           coach_group_athlete[]
+  coach_training_assignment     coach_training_assignment[]
+  coach_exercise_assignment     coach_exercise_assignment[]
+  coach_competition_preparation coach_competition_preparation[]
 }
 
 model athlete_goal {
@@ -74,22 +75,23 @@ model club {
 }
 
 model competition {
-  id            String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nom           String               @db.VarChar(255)
-  organisateur  String?              @db.VarChar(255)
-  date_debut    DateTime             @db.Date
-  date_fin      DateTime?            @db.Date
-  lieu          String?              @db.VarChar(255)
-  ville         String?              @db.VarChar(100)
-  pays          String?              @db.VarChar(100)
-  niveau        String?              @db.VarChar(50)
-  saison        String?              @db.VarChar(20)
-  created_at    DateTime?            @default(now()) @db.Timestamp(6)
-  updated_at    DateTime?            @default(now()) @db.Timestamp(6)
-  participation participation[]
-  weight_target weight_target[]
-  sources       competition_source[]
-  entries       competition_entry[]
+  id                            String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nom                           String                          @db.VarChar(255)
+  organisateur                  String?                         @db.VarChar(255)
+  date_debut                    DateTime                        @db.Date
+  date_fin                      DateTime?                       @db.Date
+  lieu                          String?                         @db.VarChar(255)
+  ville                         String?                         @db.VarChar(100)
+  pays                          String?                         @db.VarChar(100)
+  niveau                        String?                         @db.VarChar(50)
+  saison                        String?                         @db.VarChar(20)
+  created_at                    DateTime?                       @default(now()) @db.Timestamp(6)
+  updated_at                    DateTime?                       @default(now()) @db.Timestamp(6)
+  participation                 participation[]
+  weight_target                 weight_target[]
+  sources                       competition_source[]
+  entries                       competition_entry[]
+  coach_competition_preparation coach_competition_preparation[]
 }
 
 // Références externes d'une competition canonique EKVARA : une même
@@ -345,17 +347,48 @@ model weight_target {
 // posséder à la fois athlete et coach_profile (utilisateur hybride) : ce
 // sont deux profils indépendants sur la même identité, pas un rôle exclusif.
 model coach_profile {
-  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id                String                   @unique @db.Uuid
-  club_id                String?                  @db.Uuid
-  created_at             DateTime?                @default(now()) @db.Timestamp(6)
-  updated_at             DateTime?                @default(now()) @db.Timestamp(6)
-  app_user               app_user                 @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  club                   club?                    @relation(fields: [club_id], references: [id], onUpdate: NoAction)
-  athletes               coach_athlete[]
-  groups                 coach_group[]
-  coach_training_session coach_training_session[]
-  exercises              exercise[]
+  id                            String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                       String                          @unique @db.Uuid
+  club_id                       String?                         @db.Uuid
+  created_at                    DateTime?                       @default(now()) @db.Timestamp(6)
+  updated_at                    DateTime?                       @default(now()) @db.Timestamp(6)
+  app_user                      app_user                        @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  club                          club?                           @relation(fields: [club_id], references: [id], onUpdate: NoAction)
+  athletes                      coach_athlete[]
+  groups                        coach_group[]
+  coach_training_session        coach_training_session[]
+  exercises                     exercise[]
+  coach_competition_preparation coach_competition_preparation[]
+}
+
+// Sélection/préparation interne du coach pour une compétition — distincte
+// d'une participation officielle FFTDA/WT/Martial Events (voir
+// CoachCompetitionPreparationsService pour la justification complète du
+// choix d'une ressource séparée plutôt que d'enrichir `participation`) :
+// un coach peut préparer un athlète AVANT toute inscription fédérale connue,
+// et deux coachs liés au même athlète ont chacun leur propre préparation
+// privée — jamais partagée, jamais visible de l'autre coach (voir
+// CoachPreparationOwnershipGuard). `statut` reste une convention interne en
+// varchar (jamais un enum Prisma), même politique que `participation.statut`.
+model coach_competition_preparation {
+  id                     String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  coach_id               String        @db.Uuid
+  athlete_id             String        @db.Uuid
+  competition_id         String        @db.Uuid
+  statut                 String        @default("envisage") @db.VarChar(20)
+  categorie_age_prevue   String?       @db.VarChar(50)
+  categorie_poids_prevue String?       @db.VarChar(50)
+  objectif               String?
+  note_coach             String?
+  created_at             DateTime?     @default(now()) @db.Timestamp(6)
+  updated_at             DateTime?     @default(now()) @db.Timestamp(6)
+  coach_profile          coach_profile @relation(fields: [coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  athlete                athlete       @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  competition            competition   @relation(fields: [competition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([coach_id, athlete_id, competition_id])
+  @@index([athlete_id])
+  @@index([competition_id])
 }
 
 // Source de vérité UNIQUE de l'autorisation coach -> athlète (voir

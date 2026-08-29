@@ -19,8 +19,8 @@ export class CompetitionsService {
     private readonly martialEventsImporterService: MartialEventsImporterService,
   ) {}
 
-  findAll() {
-    return this.competitionsRepository.findMany();
+  findAll(search?: string) {
+    return this.competitionsRepository.findMany(search);
   }
 
   async findOne(id: string) {

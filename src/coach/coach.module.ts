@@ -23,6 +23,12 @@ import { CoachExercisesRepository } from "./coach-exercises.repository";
 import { CoachAthleteWeightsController } from "./coach-athlete-weights.controller";
 import { CoachAthleteGoalsController } from "./coach-athlete-goals.controller";
 import { CoachAthleteMetricsController } from "./coach-athlete-metrics.controller";
+import { CoachCompetitionsController } from "./coach-competitions.controller";
+import { CoachCompetitionsService } from "./coach-competitions.service";
+import { CoachCompetitionsRepository } from "./coach-competitions.repository";
+import { CoachCompetitionPreparationsController } from "./coach-competition-preparations.controller";
+import { CoachCompetitionPreparationsService } from "./coach-competition-preparations.service";
+import { CoachCompetitionPreparationsRepository } from "./coach-competition-preparations.repository";
 
 @Module({
   // AthletesModule : réutilise AthletesService.findOne() pour GET
@@ -42,6 +48,8 @@ import { CoachAthleteMetricsController } from "./coach-athlete-metrics.controlle
     CoachAthleteWeightsController,
     CoachAthleteGoalsController,
     CoachAthleteMetricsController,
+    CoachCompetitionsController,
+    CoachCompetitionPreparationsController,
   ],
   providers: [
     CoachService,
@@ -55,6 +63,10 @@ import { CoachAthleteMetricsController } from "./coach-athlete-metrics.controlle
     CoachDestinataireResolver,
     CoachExercisesService,
     CoachExercisesRepository,
+    CoachCompetitionsService,
+    CoachCompetitionsRepository,
+    CoachCompetitionPreparationsService,
+    CoachCompetitionPreparationsRepository,
   ],
 })
 export class CoachModule {}

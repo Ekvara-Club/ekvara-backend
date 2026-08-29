@@ -22,9 +22,13 @@ export class CompetitionsController {
     private readonly competitionEntriesService: CompetitionEntriesService,
   ) {}
 
+  // ?search= : recherche catalogue pour "+ Préparer une compétition" côté
+  // coach (ticket Sélection & préparation V1 §23) — ajout additif,
+  // comportement inchangé sans le paramètre (voir CompetitionsRepository.
+  // findMany : GET /competitions reste public, pas de guard ajouté ici).
   @Get()
-  findAll() {
-    return this.competitionsService.findAll();
+  findAll(@Query("search") search?: string) {
+    return this.competitionsService.findAll(search);
   }
 
   // Catalogue global (ownership non pertinent) mais fiche appartenant à

@@ -37,10 +37,19 @@ export class CompetitionsRepository {
   // historiques (une seule source chacune), c'est exactement la même valeur
   // qu'avant la migration. Pour une competition dédoublonnée, c'est la
   // source qui a créé la ligne canonique à l'origine.
-  async findMany() {
+  //
+  // `search` est un ajout additif (ticket Sélection & préparation V1 §23,
+  // "+ Préparer une compétition") : filtre optionnel par nom, insensible à
+  // la casse, limité à 20 résultats pour rester utilisable dans un champ de
+  // recherche — jamais appliqué quand `search` est omis (comportement
+  // historique de cet endpoint entièrement inchangé pour les appelants
+  // existants, ex. l'app athlète).
+  async findMany(search?: string) {
     const competitions = await this.prisma.competition.findMany({
+      where: search ? { nom: { contains: search, mode: "insensitive" } } : undefined,
       orderBy: { date_debut: "desc" },
       include: { sources: { orderBy: { created_at: "asc" }, take: 1 } },
+      take: search ? 20 : undefined,
     });
     return competitions.map(withPrimarySourceFlat);
   }
