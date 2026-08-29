@@ -74,6 +74,43 @@ export class CoachTrainingsRepository {
     });
   }
 
+  // Ticket "Dashboard groupe Coach V1" §12 : "réalisée" = date_debut passée
+  // ET statut non annulé (même exclusion que INACTIVE_TRAINING_STATUSES
+  // ailleurs dans le projet), filtré via assignments.group_id (snapshot au
+  // moment de CHAQUE séance, jamais coach_group_athlete) — un athlète retiré
+  // du groupe depuis reste compté pour une séance passée où il a réellement
+  // été assigné via ce groupe (ticket §63-64). `some` suffit : compte la
+  // séance collective une fois, indépendamment du nombre d'athlètes assignés
+  // via ce groupe.
+  countCompletedSessionsForGroup(coachId: string, groupId: string, from: Date, to: Date): Promise<number> {
+    return this.prisma.coach_training_session.count({
+      where: {
+        coach_id: coachId,
+        statut: { not: CANCELLED_TRAINING_STATUS },
+        date_debut: { gte: from, lt: to },
+        assignments: { some: { group_id: groupId } },
+      },
+    });
+  }
+
+  // "À venir" (ticket §13, max 3 imposé côté service) : mêmes assignments
+  // déjà snapshottés à la création de la séance (qu'elle soit passée ou
+  // future ne change rien au mécanisme, voir schema.prisma) — pas de requête
+  // séparée "current vs snapshot" nécessaire pour le futur.
+  findUpcomingSessionsForGroup(coachId: string, groupId: string, from: Date, limit: number) {
+    return this.prisma.coach_training_session.findMany({
+      where: {
+        coach_id: coachId,
+        statut: { not: CANCELLED_TRAINING_STATUS },
+        date_debut: { gte: from },
+        assignments: { some: { group_id: groupId } },
+      },
+      select: { id: true, titre: true, type_seance: true, date_debut: true, date_fin: true },
+      orderBy: { date_debut: "asc" },
+      take: limit,
+    });
+  }
+
   findSessionsForCoach(coachId: string, range?: { from: Date; to: Date }): Promise<CoachTrainingSummary[]> {
     return this.prisma.coach_training_session.findMany({
       where: {

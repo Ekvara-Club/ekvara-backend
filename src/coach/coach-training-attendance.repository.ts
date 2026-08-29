@@ -86,4 +86,41 @@ export class CoachTrainingAttendanceRepository {
       select: { id: true, training_attendance: { select: { status: true } } },
     });
   }
+
+  // Batch, jamais une requête par athlète (ticket "Dashboard groupe Coach
+  // V1" §10/§38) : même filtre que findEligibleSessionsForSummary
+  // (statut/fenêtre/isolation coach), athlete_id ajouté au select pour
+  // regrouper le résultat multi-athlètes en mémoire (CoachTrainingAttendanceService).
+  findEligibleSessionsForSummaryBatch(coachId: string, athleteIds: string[], from: Date, to: Date, cancelledStatus: string) {
+    if (athleteIds.length === 0) return Promise.resolve([]);
+    return this.prisma.training_session.findMany({
+      where: {
+        athlete_id: { in: athleteIds },
+        statut: { not: cancelledStatus },
+        date_debut: { gte: from, lte: to },
+        coach_training_assignment: { coach_training_session: { coach_id: coachId } },
+      },
+      select: { id: true, athlete_id: true, training_attendance: { select: { status: true } } },
+    });
+  }
+
+  // Rollup GROUPE (ticket §8-9/§63-64) : filtre sur
+  // coach_training_assignment.group_id, PAS sur athlete_id/coach_group_athlete
+  // — chaque training_session retourné EST déjà une paire (athlète, séance)
+  // au sens du schéma (une ligne training_session par athlète assigné), donc
+  // ce résultat sert directement de base à eligibleAttendances/
+  // recordedAttendances (voir CoachTrainingAttendanceService.getGroupSummary).
+  // Capture le groupe TEL QU'IL ÉTAIT au moment de chaque séance : un
+  // athlète retiré du groupe depuis reste compté pour les séances passées où
+  // il était réellement assigné via ce groupe.
+  findGroupEligibleAttendancePairs(coachId: string, groupId: string, from: Date, to: Date, cancelledStatus: string) {
+    return this.prisma.training_session.findMany({
+      where: {
+        statut: { not: cancelledStatus },
+        date_debut: { gte: from, lte: to },
+        coach_training_assignment: { group_id: groupId, coach_training_session: { coach_id: coachId } },
+      },
+      select: { id: true, training_attendance: { select: { status: true } } },
+    });
+  }
 }

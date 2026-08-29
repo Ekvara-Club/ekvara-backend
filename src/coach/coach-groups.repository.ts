@@ -32,6 +32,18 @@ export class CoachGroupsRepository {
     });
   }
 
+  // Ticket "Dashboard groupe Coach V1" §6 : le hero du dashboard groupe n'a
+  // besoin que du nom (le roster vient de CoachDashboardService.
+  // getGroupRosterComputed, déjà propriétaire de coach_group_athlete) —
+  // évite de refaire un aller-retour complet avec la liste des membres
+  // (findGroupDetail) juste pour un nom.
+  findNameForCoach(groupId: string) {
+    return this.prisma.coach_group.findUnique({
+      where: { id: groupId },
+      select: { id: true, name: true },
+    });
+  }
+
   findGroupDetail(groupId: string) {
     return this.prisma.coach_group.findUnique({
       where: { id: groupId },

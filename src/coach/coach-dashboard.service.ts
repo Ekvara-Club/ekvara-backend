@@ -81,7 +81,17 @@ export type AttentionReasonType =
   | "WEIGHT_BELOW_TARGET"
   | "NO_WEIGHT_TARGET"
   | "METRIC_DECLINING"
-  | "NO_METRIC_DATA";
+  | "NO_METRIC_DATA"
+  // Ticket "Dashboard groupe Coach V1" §21-25 : jamais produites par
+  // buildAttentionList (dashboard global, inchangé) — uniquement par
+  // CoachGroupDashboardService, qui les ajoute par-dessus
+  // computeBaseAttentionReasons. Seuils validés explicitement avec
+  // l'utilisateur avant implémentation (voir rapport final) :
+  // ATTENDANCE_LOW seulement si recordedSessions >= 3 ET taux < 70% ;
+  // aucun seuil de proximité compétition (jamais généré sur ce seul critère).
+  | "ATTENDANCE_LOW"
+  | "GOAL_OVERDUE"
+  | "PREPARATION_FORFAIT";
 
 export interface AttentionReason {
   type: AttentionReasonType;
@@ -158,7 +168,12 @@ interface AthleteBaseRow {
 // ticket liste exactement 5 champs) : gardé à part pour NO_METRIC_DATA et
 // athletesWithoutRecentMetrics, qui partagent la même définition (voir §9/§20
 // du rapport final).
-interface AthleteComputed {
+//
+// Exportée (ticket "Dashboard groupe Coach V1" §7/§10) : CoachGroupDashboardService
+// réutilise computeAll/computeBaseAttentionReasons/buildUpcomingCompetitions
+// tels quels plutôt que de recalculer poids/progression/compétition depuis
+// zéro pour les lignes athlète du groupe.
+export interface AthleteComputed {
   base: AthleteBaseRow;
   groups: AthleteGroupRef[];
   weight: WeightSummaryView;
@@ -199,6 +214,20 @@ export class CoachDashboardService {
 
     const [computed] = await this.computeAll(coachId, [athlete], new Date());
     return toAthleteDashboardSummary(computed);
+  }
+
+  // Point d'entrée réutilisé par CoachGroupDashboardService (ticket
+  // "Dashboard groupe Coach V1" §7) : roster ACTUEL du groupe (jamais un
+  // snapshot historique — voir ticket §64, la distinction snapshot/actuel ne
+  // concerne que les agrégats attendance/training, pas la liste des
+  // athlètes affichés) puis exactement le même calcul batch poids/
+  // progression/compétition/objectif que getAthleteSummaries, jamais
+  // dupliqué. resolveRoster lève déjà ForbiddenException si le groupe
+  // n'appartient pas à ce coach — défensif uniquement ici, l'appelant HTTP
+  // passe par CoachGroupOwnershipGuard en amont.
+  async getGroupRosterComputed(coachId: string, groupId: string): Promise<AthleteComputed[]> {
+    const roster = await this.resolveRoster(coachId, groupId);
+    return this.computeAll(coachId, roster, new Date());
   }
 
   async getDashboard(coachId: string): Promise<CoachDashboardView> {
@@ -602,7 +631,11 @@ function buildGroupSummaries(groups: GroupListRow[], computed: AthleteComputed[]
     .sort((a, b) => a.name.localeCompare(b.name, "fr"));
 }
 
-function buildUpcomingCompetitions(computed: AthleteComputed[]): UpcomingCompetitionGroupView[] {
+// Exportée (ticket "Dashboard groupe Coach V1" §14) : même règle de dédup
+// "prochaine compétition par athlète" que le dashboard global, jamais
+// réécrite pour le groupe — CoachGroupDashboardService l'appelle telle
+// quelle sur le roster du groupe.
+export function buildUpcomingCompetitions(computed: AthleteComputed[]): UpcomingCompetitionGroupView[] {
   const byCompetition = new Map<string, UpcomingCompetitionGroupView>();
 
   for (const athlete of computed) {
@@ -643,27 +676,38 @@ function buildUpcomingCompetitions(computed: AthleteComputed[]): UpcomingCompeti
 // J-7/J-14/J-30 n'est autorisé par le ticket sans décision produit ;
 // `nextCompetition.daysUntil` est déjà exposé pour que le frontend applique
 // son propre seuil sans qu'on lui impose une règle inventée ici.
+// Exportée (ticket "Dashboard groupe Coach V1" §21) : les raisons poids +
+// progression restent l'unique logique d'attention du dashboard global
+// (inchangé). CoachGroupDashboardService appelle cette même fonction puis
+// ajoute par-dessus ATTENDANCE_LOW/GOAL_OVERDUE/PREPARATION_FORFAIT — jamais
+// une réinterprétation séparée des mêmes règles poids/métrique.
+export function computeBaseAttentionReasons(athlete: AthleteComputed): AttentionReason[] {
+  const reasons: AttentionReason[] = [];
+
+  if (athlete.weight.target === null) {
+    reasons.push({ type: "NO_WEIGHT_TARGET" });
+  } else if (athlete.weight.differenceToTarget !== null && !isOnTarget(athlete.weight.differenceToTarget)) {
+    reasons.push({
+      type: athlete.weight.differenceToTarget > 0 ? "WEIGHT_ABOVE_TARGET" : "WEIGHT_BELOW_TARGET",
+      value: athlete.weight.differenceToTarget,
+    });
+  }
+
+  if (athlete.progression.decliningCount > 0) {
+    reasons.push({ type: "METRIC_DECLINING", value: athlete.progression.decliningCount });
+  }
+  if (!athlete.hasAnyMeasurement) {
+    reasons.push({ type: "NO_METRIC_DATA" });
+  }
+
+  return reasons;
+}
+
 function buildAttentionList(computed: AthleteComputed[]): AthleteNeedingAttentionView[] {
   const result: AthleteNeedingAttentionView[] = [];
 
   for (const athlete of computed) {
-    const reasons: AttentionReason[] = [];
-
-    if (athlete.weight.target === null) {
-      reasons.push({ type: "NO_WEIGHT_TARGET" });
-    } else if (athlete.weight.differenceToTarget !== null && !isOnTarget(athlete.weight.differenceToTarget)) {
-      reasons.push({
-        type: athlete.weight.differenceToTarget > 0 ? "WEIGHT_ABOVE_TARGET" : "WEIGHT_BELOW_TARGET",
-        value: athlete.weight.differenceToTarget,
-      });
-    }
-
-    if (athlete.progression.decliningCount > 0) {
-      reasons.push({ type: "METRIC_DECLINING", value: athlete.progression.decliningCount });
-    }
-    if (!athlete.hasAnyMeasurement) {
-      reasons.push({ type: "NO_METRIC_DATA" });
-    }
+    const reasons = computeBaseAttentionReasons(athlete);
 
     if (reasons.length > 0) {
       result.push({

@@ -33,6 +33,8 @@ import { CoachTrainingAttendanceController } from "./coach-training-attendance.c
 import { CoachAthleteAttendanceController } from "./coach-athlete-attendance.controller";
 import { CoachTrainingAttendanceService } from "./coach-training-attendance.service";
 import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.repository";
+import { CoachGroupDashboardController } from "./coach-group-dashboard.controller";
+import { CoachGroupDashboardService } from "./coach-group-dashboard.service";
 
 @Module({
   // AthletesModule : réutilise AthletesService.findOne() pour GET
@@ -56,6 +58,7 @@ import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.r
     CoachCompetitionPreparationsController,
     CoachTrainingAttendanceController,
     CoachAthleteAttendanceController,
+    CoachGroupDashboardController,
   ],
   providers: [
     CoachService,
@@ -75,6 +78,7 @@ import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.r
     CoachCompetitionPreparationsRepository,
     CoachTrainingAttendanceService,
     CoachTrainingAttendanceRepository,
+    CoachGroupDashboardService,
   ],
 })
 export class CoachModule {}
