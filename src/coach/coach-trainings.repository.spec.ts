@@ -2,6 +2,13 @@ import "dotenv/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { CoachTrainingsRepository, TrainingFieldsSnapshot } from "./coach-trainings.repository";
 
+// Signature createSessionWithAssignments/replaceAssignments élargie (ticket
+// "Présences Coach V1") pour porter group_id par athlète — sans intérêt pour
+// ces tests, qui n'exercent que la transaction de base.
+function athletesOf(...athleteIds: string[]): { athleteId: string; groupId: string | null }[] {
+  return athleteIds.map((athleteId) => ({ athleteId, groupId: null }));
+}
+
 // Test d'intégration contre la vraie base Postgres locale : la transaction
 // de création (session + N training_session + N assignments), la
 // propagation batch, et le remplacement complet des assignments dépendent de
@@ -65,7 +72,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       const sessionId = await repository.createSessionWithAssignments(
         coachId,
         fields(),
-        [athleteA, athleteB],
+        athletesOf(athleteA, athleteB),
         [group.id],
       );
 
@@ -95,7 +102,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       const coachId = await makeCoach();
       const athleteA = await makeAthlete();
       const athleteB = await makeAthlete();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [athleteA, athleteB], []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA, athleteB), []);
 
       const newStart = new Date("2026-09-05T20:30:00.000Z");
       await repository.updateContentAndPropagate(sessionId, { date_debut: newStart });
@@ -110,7 +117,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
     it("propage statut='annule' à la session ET à tous les training_session assignés (soft, aucune ligne supprimée)", async () => {
       const coachId = await makeCoach();
       const athleteA = await makeAthlete();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [athleteA], []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), []);
 
       await repository.cancel(sessionId);
 
@@ -128,13 +135,13 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       const athleteA = await makeAthlete();
       const athleteB = await makeAthlete();
       const athleteC = await makeAthlete();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [athleteA, athleteB], []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA, athleteB), []);
 
       const before = await repository.findCurrentAssignments(sessionId);
       const bTrainingSessionId = before.find((a) => a.athlete_id === athleteB)!.training_session_id;
 
       // Nouvel ensemble : A (conservé), C (ajouté), B retiré.
-      await repository.replaceAssignments(sessionId, fields(), [athleteC], [bTrainingSessionId], []);
+      await repository.replaceAssignments(sessionId, fields(), athletesOf(athleteC), [bTrainingSessionId], []);
 
       const after = await repository.findCurrentAssignments(sessionId);
       expect(after.map((a) => a.athlete_id).sort()).toEqual([athleteA, athleteC].sort());
@@ -145,7 +152,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       const coachId = await makeCoach();
       const athleteA = await makeAthlete();
       const group = await prisma.coach_group.create({ data: { coach_id: coachId, name: `G ${runId}` } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [athleteA], [group.id]);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [group.id]);
 
       await repository.replaceAssignments(sessionId, fields(), [], [], [group.id]);
       await repository.replaceAssignments(sessionId, fields(), [], [], [group.id]);
@@ -174,7 +181,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       const coachId = await makeCoach();
       const athleteA = await makeAthlete();
       const group = await prisma.coach_group.create({ data: { coach_id: coachId, name: `G ${runId}` } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [athleteA], [group.id]);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [group.id]);
 
       await prisma.coach_group.delete({ where: { id: group.id } });
 
@@ -190,7 +197,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       const coachId = await makeCoach();
       const athleteA = await makeAthlete();
       await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [athleteA], []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), []);
 
       await prisma.coach_athlete.delete({
         where: { coach_id_athlete_id: { coach_id: coachId, athlete_id: athleteA } },

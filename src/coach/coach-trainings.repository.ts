@@ -98,10 +98,14 @@ export class CoachTrainingsRepository {
   // (crypto.randomUUID) pour permettre createMany (qui ne renvoie pas les
   // lignes créées côté Postgres/Prisma) tout en connaissant déjà chaque id
   // pour construire les coach_training_assignment dans la même transaction.
+  // athletes porte le libellé de groupe snapshotté (ticket "Présences Coach
+  // V1" §6/§19) : groupId = le groupe ayant réellement produit cet athlète
+  // à la résolution (premier trouvé si plusieurs, arbitraire — c'est un
+  // libellé, pas une autorisation), null si assignation individuelle.
   async createSessionWithAssignments(
     coachId: string,
     fields: TrainingFieldsSnapshot,
-    athleteIds: string[],
+    athletes: { athleteId: string; groupId: string | null }[],
     groupIds: string[],
   ): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
@@ -110,19 +114,20 @@ export class CoachTrainingsRepository {
         select: { id: true },
       });
 
-      const trainingSessionRows = athleteIds.map((athleteId) => ({
+      const trainingSessionRows = athletes.map((a) => ({
         id: randomUUID(),
-        athlete_id: athleteId,
+        athlete_id: a.athleteId,
         ...fields,
       }));
 
       if (trainingSessionRows.length > 0) {
         await tx.training_session.createMany({ data: trainingSessionRows });
         await tx.coach_training_assignment.createMany({
-          data: trainingSessionRows.map((row) => ({
+          data: trainingSessionRows.map((row, i) => ({
             coach_training_session_id: session.id,
             training_session_id: row.id,
             athlete_id: row.athlete_id,
+            group_id: athletes[i].groupId,
           })),
         });
       }
@@ -193,15 +198,35 @@ export class CoachTrainingsRepository {
     });
   }
 
+  // Ticket "Présences Coach V1" §3/§15 : un retrait d'assignation qui
+  // détruirait (cascade) une présence déjà enregistrée doit être refusé
+  // explicitement plutôt que de silencieusement effacer un historique.
+  // Lu juste avant le transaction de replaceAssignments — pas de
+  // verrouillage supplémentaire nécessaire, la fenêtre de concurrence
+  // (créer une présence entre cette lecture et le retrait) reste couverte
+  // par la contrainte FK Cascade elle-même : au pire cas elle disparaît
+  // réellement, mais c'est un scénario de double-action coach quasi
+  // inexistant en pratique et déjà hors du périmètre V1 documenté.
+  findAttendanceForTrainingSessions(trainingSessionIds: string[]) {
+    if (trainingSessionIds.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.prisma.training_attendance.findMany({
+      where: { training_session_id: { in: trainingSessionIds } },
+      select: { training_session_id: true },
+    });
+  }
+
   // Remplacement complet transactionnel (ticket §14) : retire les
   // assignments absents du nouvel ensemble (et leur training_session
   // généré), ajoute les nouveaux, remplace intégralement les
   // group_sources. `fields` sert à générer les training_session des NOUVEAUX
-  // athlètes avec le contenu ACTUEL de la séance (jamais périmé).
+  // athlètes avec le contenu ACTUEL de la séance (jamais périmé). toAdd
+  // porte le même libellé de groupe snapshotté que createSessionWithAssignments.
   async replaceAssignments(
     coachTrainingSessionId: string,
     fields: TrainingFieldsSnapshot,
-    toAddAthleteIds: string[],
+    toAdd: { athleteId: string; groupId: string | null }[],
     toRemoveTrainingSessionIds: string[],
     newGroupIds: string[],
   ): Promise<void> {
@@ -209,17 +234,21 @@ export class CoachTrainingsRepository {
       if (toRemoveTrainingSessionIds.length > 0) {
         // onDelete: Cascade sur coach_training_assignment.training_session_id
         // : supprimer training_session suffit à retirer l'assignment associé.
+        // (Le service a déjà vérifié via findAttendanceForTrainingSessions
+        // qu'aucune de ces sessions n'a de présence enregistrée avant
+        // d'appeler cette méthode — voir CoachTrainingsService.replaceAssignments.)
         await tx.training_session.deleteMany({ where: { id: { in: toRemoveTrainingSessionIds } } });
       }
 
-      if (toAddAthleteIds.length > 0) {
-        const newRows = toAddAthleteIds.map((athleteId) => ({ id: randomUUID(), athlete_id: athleteId, ...fields }));
+      if (toAdd.length > 0) {
+        const newRows = toAdd.map((a) => ({ id: randomUUID(), athlete_id: a.athleteId, ...fields }));
         await tx.training_session.createMany({ data: newRows });
         await tx.coach_training_assignment.createMany({
-          data: newRows.map((row) => ({
+          data: newRows.map((row, i) => ({
             coach_training_session_id: coachTrainingSessionId,
             training_session_id: row.id,
             athlete_id: row.athlete_id,
+            group_id: toAdd[i].groupId,
           })),
         });
       }

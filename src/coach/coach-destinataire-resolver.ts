@@ -4,6 +4,12 @@ import { PrismaService } from "../prisma/prisma.service";
 export interface ResolvedDestinataires {
   athleteIds: string[];
   groupIds: string[];
+  // Lignes de membership BRUTES (avant union/dédoublonnage), exposées pour
+  // les appelants qui ont besoin de la provenance PAR athlète (ex.
+  // CoachTrainingsService, pour le libellé de groupe snapshotté sur
+  // coach_training_assignment.group_id — voir ticket "Présences Coach V1").
+  // Ne change rien pour les appelants existants (exercices) qui l'ignorent.
+  groupMembers: { athlete_id: string; group_id: string }[];
 }
 
 // Résolution + autorisation des destinataires (groupes + athlètes
@@ -49,7 +55,7 @@ export class CoachDestinataireResolver {
       groupIds.length > 0
         ? await this.prisma.coach_group_athlete.findMany({
             where: { group_id: { in: groupIds } },
-            select: { athlete_id: true },
+            select: { athlete_id: true, group_id: true },
           })
         : [];
 
@@ -59,6 +65,6 @@ export class CoachDestinataireResolver {
       throw new BadRequestException("Au moins un destinataire (groupe ou athlète) est requis");
     }
 
-    return { athleteIds: [...union], groupIds: [...new Set(groupIds)] };
+    return { athleteIds: [...union], groupIds: [...new Set(groupIds)], groupMembers };
   }
 }

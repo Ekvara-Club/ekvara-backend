@@ -1,11 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import {
   CoachTrainingDetail,
   CoachTrainingSummary,
   CoachTrainingsRepository,
   TrainingFieldsSnapshot,
 } from "./coach-trainings.repository";
-import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { CoachDestinataireResolver, ResolvedDestinataires } from "./coach-destinataire-resolver";
 import { CreateCoachTrainingDto } from "./dto/create-coach-training.dto";
 import { UpdateCoachTrainingDto } from "./dto/update-coach-training.dto";
 import { ReplaceCoachTrainingAssignmentsDto } from "./dto/replace-coach-training-assignments.dto";
@@ -21,13 +21,10 @@ export class CoachTrainingsService {
     const fields = toFieldsSnapshot(dto);
     assertEndAfterStart(fields.date_debut, fields.date_fin);
 
-    const { athleteIds, groupIds } = await this.destinataireResolver.resolve(
-      coachId,
-      dto.groupIds ?? [],
-      dto.athleteIds ?? [],
-    );
+    const resolved = await this.destinataireResolver.resolve(coachId, dto.groupIds ?? [], dto.athleteIds ?? []);
+    const athletes = toAthletesWithGroupLabel(resolved);
 
-    const sessionId = await this.repository.createSessionWithAssignments(coachId, fields, athleteIds, groupIds);
+    const sessionId = await this.repository.createSessionWithAssignments(coachId, fields, athletes, resolved.groupIds);
     return this.findOneForCoach(sessionId);
   }
 
@@ -69,25 +66,37 @@ export class CoachTrainingsService {
       throw new NotFoundException(`Séance ${trainingSessionId} introuvable`);
     }
 
-    const { athleteIds: newAthleteIds, groupIds: validGroupIds } = await this.destinataireResolver.resolve(
-      coachId,
-      dto.groupIds,
-      dto.athleteIds,
-    );
+    const resolved = await this.destinataireResolver.resolve(coachId, dto.groupIds, dto.athleteIds);
+    const newAthleteIdSet = new Set(resolved.athleteIds);
 
     const currentAssignments = await this.repository.findCurrentAssignments(trainingSessionId);
     const currentAthleteIds = new Set(currentAssignments.map((a) => a.athlete_id));
-    const newAthleteIdSet = new Set(newAthleteIds);
 
-    const toAdd = newAthleteIds.filter((id) => !currentAthleteIds.has(id));
+    const toAddAthleteIds = resolved.athleteIds.filter((id) => !currentAthleteIds.has(id));
+    const toAdd = toAthletesWithGroupLabel(resolved).filter((a) => toAddAthleteIds.includes(a.athleteId));
     const toRemove = currentAssignments.filter((a) => !newAthleteIdSet.has(a.athlete_id));
+
+    // Ticket "Présences Coach V1" §3/§15 : refuser tout le remplacement
+    // (pas d'application partielle) si retirer un athlète détruirait une
+    // présence déjà enregistrée pour cette séance — jamais un effacement
+    // silencieux d'historique.
+    if (toRemove.length > 0) {
+      const attendanceOnRemoved = await this.repository.findAttendanceForTrainingSessions(
+        toRemove.map((a) => a.training_session_id),
+      );
+      if (attendanceOnRemoved.length > 0) {
+        throw new ConflictException(
+          "Impossible de retirer un ou plusieurs athlètes : une présence est déjà enregistrée pour cette séance.",
+        );
+      }
+    }
 
     await this.repository.replaceAssignments(
       trainingSessionId,
       toFieldsSnapshot(current),
       toAdd,
       toRemove.map((a) => a.training_session_id),
-      validGroupIds,
+      resolved.groupIds,
     );
 
     return this.findOneForCoach(trainingSessionId);
@@ -175,6 +184,24 @@ function assertEndAfterStart(startAt: Date, endAt?: Date): void {
   if (endAt && endAt <= startAt) {
     throw new BadRequestException("date_fin doit être strictement postérieure à date_debut");
   }
+}
+
+// Ticket "Présences Coach V1" §6/§19 : associe à chaque athlète résolu le
+// groupe l'ayant réellement produit (premier trouvé si plusieurs — c'est un
+// libellé d'affichage, pas une autorisation), null si assignation
+// individuelle. Construit à partir des lignes de membership brutes déjà
+// récupérées par CoachDestinataireResolver (pas de requête supplémentaire).
+function toAthletesWithGroupLabel(resolved: ResolvedDestinataires): { athleteId: string; groupId: string | null }[] {
+  const groupByAthlete = new Map<string, string>();
+  for (const member of resolved.groupMembers) {
+    if (!groupByAthlete.has(member.athlete_id)) {
+      groupByAthlete.set(member.athlete_id, member.group_id);
+    }
+  }
+  return resolved.athleteIds.map((athleteId) => ({
+    athleteId,
+    groupId: groupByAthlete.get(athleteId) ?? null,
+  }));
 }
 
 function toSummaryView(session: CoachTrainingSummary) {

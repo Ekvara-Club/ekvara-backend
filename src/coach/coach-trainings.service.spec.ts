@@ -13,6 +13,7 @@ describe("CoachTrainingsService", () => {
     updateContentAndPropagate: jest.Mock;
     findCurrentAssignments: jest.Mock;
     replaceAssignments: jest.Mock;
+    findAttendanceForTrainingSessions: jest.Mock;
     cancel: jest.Mock;
   };
   let destinataireResolver: { resolve: jest.Mock };
@@ -49,6 +50,12 @@ describe("CoachTrainingsService", () => {
       updateContentAndPropagate: jest.fn(),
       findCurrentAssignments: jest.fn(),
       replaceAssignments: jest.fn(),
+      // Défaut : aucune présence enregistrée sur les training_session
+      // retirés -> le blocage (ticket "Présences Coach V1" §3) ne se
+      // déclenche jamais par défaut dans ces tests, qui n'exercent pas ce cas
+      // (voir coach-training-attendance.spec.ts, intégration Postgres réelle,
+      // pour ce cas précis).
+      findAttendanceForTrainingSessions: jest.fn().mockResolvedValue([]),
       cancel: jest.fn(),
     };
     destinataireResolver = { resolve: jest.fn() };
@@ -92,7 +99,11 @@ describe("CoachTrainingsService", () => {
     });
 
     it("utilise l'union résolue (dédoublonnée) renvoyée par le resolver pour créer la session", async () => {
-      destinataireResolver.resolve.mockResolvedValue({ athleteIds: [ATHLETE_A, ATHLETE_B], groupIds: [GROUP_ID] });
+      destinataireResolver.resolve.mockResolvedValue({
+        athleteIds: [ATHLETE_A, ATHLETE_B],
+        groupIds: [GROUP_ID],
+        groupMembers: [],
+      });
       repository.createSessionWithAssignments.mockResolvedValue(SESSION_ID);
       repository.findSessionDetail.mockResolvedValue(detail());
 
@@ -104,8 +115,8 @@ describe("CoachTrainingsService", () => {
       });
 
       expect(destinataireResolver.resolve).toHaveBeenCalledWith(COACH_ID, [GROUP_ID], [ATHLETE_A]);
-      const [, , athleteIds, groupIds] = repository.createSessionWithAssignments.mock.calls[0];
-      expect(athleteIds).toEqual([ATHLETE_A, ATHLETE_B]);
+      const [, , athletes, groupIds] = repository.createSessionWithAssignments.mock.calls[0];
+      expect(athletes.map((a: { athleteId: string }) => a.athleteId).sort()).toEqual([ATHLETE_A, ATHLETE_B].sort());
       expect(groupIds).toEqual([GROUP_ID]);
     });
 
@@ -190,7 +201,7 @@ describe("CoachTrainingsService", () => {
   describe("replaceAssignments — diff add/remove/keep", () => {
     it("calcule correctement toAdd et toRemove à partir de l'état courant", async () => {
       repository.findSessionDetail.mockResolvedValue(detail());
-      destinataireResolver.resolve.mockResolvedValue({ athleteIds: ["athlete-c"], groupIds: [] });
+      destinataireResolver.resolve.mockResolvedValue({ athleteIds: ["athlete-c"], groupIds: [], groupMembers: [] });
       repository.findCurrentAssignments.mockResolvedValue([
         { athlete_id: ATHLETE_A, training_session_id: "ts-a" },
         { athlete_id: ATHLETE_B, training_session_id: "ts-b" },
@@ -199,13 +210,13 @@ describe("CoachTrainingsService", () => {
       await service.replaceAssignments(COACH_ID, SESSION_ID, { groupIds: [], athleteIds: ["athlete-c"] });
 
       const [, , toAdd, toRemoveTrainingSessionIds] = repository.replaceAssignments.mock.calls[0];
-      expect(toAdd).toEqual(["athlete-c"]);
+      expect(toAdd).toEqual([{ athleteId: "athlete-c", groupId: null }]);
       expect(toRemoveTrainingSessionIds.sort()).toEqual(["ts-a", "ts-b"].sort());
     });
 
     it("athlètes inchangés -> ni add ni remove", async () => {
       repository.findSessionDetail.mockResolvedValue(detail());
-      destinataireResolver.resolve.mockResolvedValue({ athleteIds: [ATHLETE_A], groupIds: [] });
+      destinataireResolver.resolve.mockResolvedValue({ athleteIds: [ATHLETE_A], groupIds: [], groupMembers: [] });
       repository.findCurrentAssignments.mockResolvedValue([{ athlete_id: ATHLETE_A, training_session_id: "ts-a" }]);
 
       await service.replaceAssignments(COACH_ID, SESSION_ID, { groupIds: [], athleteIds: [ATHLETE_A] });
