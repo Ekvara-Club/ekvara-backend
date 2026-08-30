@@ -343,6 +343,10 @@ describe("CompetitionsService", () => {
       saison: null,
       created_at: new Date(),
       updated_at: new Date(),
+      all_sources: [
+        { source: "fftda", source_url: null },
+        { source: "world_taekwondo", source_url: "https://example.org/wt/26025" },
+      ],
     };
 
     it("retourne une vue stable (jamais l'objet Prisma brut) quand la compétition existe", async () => {
@@ -363,6 +367,10 @@ describe("CompetitionsService", () => {
         pays: "France",
         niveau: "international",
         saison: null,
+        sources: [
+          { source: "fftda", sourceUrl: null },
+          { source: "world_taekwondo", sourceUrl: "https://example.org/wt/26025" },
+        ],
       });
       // Jamais l'objet Prisma brut : pas de created_at/updated_at exposés.
       expect(result).not.toHaveProperty("created_at");

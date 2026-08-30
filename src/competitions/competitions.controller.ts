@@ -22,13 +22,51 @@ export class CompetitionsController {
     private readonly competitionEntriesService: CompetitionEntriesService,
   ) {}
 
-  // ?search= : recherche catalogue pour "+ Préparer une compétition" côté
-  // coach (ticket Sélection & préparation V1 §23) — ajout additif,
-  // comportement inchangé sans le paramètre (voir CompetitionsRepository.
-  // findMany : GET /competitions reste public, pas de guard ajouté ici).
+  // ?search= seul : comportement historique inchangé (recherche catalogue
+  // "+ Préparer une compétition" côté coach, ticket Sélection & préparation
+  // V1 §23 — jamais paginé, capé à 20 résultats côté repository).
+  //
+  // ?page=&limit=(&scope=&search=) : pagination réelle (ticket "Compétitions
+  // Athlete V2" §8) pour le nouvel explorateur — activée UNIQUEMENT si page
+  // ou limit est explicitement fourni, jamais par défaut. GET /competitions
+  // reste public, pas de guard ajouté ici.
   @Get()
-  findAll(@Query("search") search?: string) {
-    return this.competitionsService.findAll(search);
+  findAll(
+    @Query("search") search?: string,
+    @Query("page") pageParam?: string,
+    @Query("limit") limitParam?: string,
+    @Query("scope") scope?: string,
+  ) {
+    if (pageParam === undefined && limitParam === undefined) {
+      return this.competitionsService.findAll(search);
+    }
+
+    const page = this.parsePositiveInt(pageParam, "page", 1);
+    const limit = this.parsePositiveInt(limitParam, "limit", 20, 50);
+
+    if (scope !== undefined && scope !== "upcoming" && scope !== "past") {
+      throw new BadRequestException('Le paramètre scope doit valoir "upcoming" ou "past"');
+    }
+
+    return this.competitionsService.findAllPaginated({
+      search,
+      page,
+      limit,
+      scope: scope as "upcoming" | "past" | undefined,
+    });
+  }
+
+  private parsePositiveInt(value: string | undefined, name: string, fallback: number, max?: number): number {
+    if (value === undefined || value === "") {
+      return fallback;
+    }
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1 || (max !== undefined && parsed > max)) {
+      throw new BadRequestException(
+        `Le paramètre ${name} doit être un entier entre 1 et ${max ?? "illimité"}`,
+      );
+    }
+    return parsed;
   }
 
   // Catalogue global (ownership non pertinent) mais fiche appartenant à

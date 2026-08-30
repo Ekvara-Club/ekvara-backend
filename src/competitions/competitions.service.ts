@@ -23,6 +23,10 @@ export class CompetitionsService {
     return this.competitionsRepository.findMany(search);
   }
 
+  findAllPaginated(params: { search?: string; page: number; limit: number; scope?: "upcoming" | "past" }) {
+    return this.competitionsRepository.findManyPaginated(params);
+  }
+
   async findOne(id: string) {
     const competition = await this.competitionsRepository.findById(id);
     if (!competition) {
@@ -192,7 +196,11 @@ export class CompetitionsService {
 // dérive de la "source primaire" (première competition_source créée pour
 // cette competition), pour ne pas casser le contrat frontend existant.
 function toCompetitionDetailView(
-  competition: CompetitionModel & { source: string | null; source_external_id: string | null },
+  competition: CompetitionModel & {
+    source: string | null;
+    source_external_id: string | null;
+    all_sources: { source: string; source_url: string | null }[];
+  },
 ) {
   return {
     id: competition.id,
@@ -207,5 +215,9 @@ function toCompetitionDetailView(
     pays: competition.pays,
     niveau: competition.niveau,
     saison: competition.saison,
+    // Ticket "Compétitions Athlete V2" §20 : liste complète des sources
+    // (nom + lien externe si connu), en plus de source/sourceExternalId
+    // (primaire, historique, jamais retiré) — jamais l'id technique exposé.
+    sources: competition.all_sources.map((s) => ({ source: s.source, sourceUrl: s.source_url })),
   };
 }

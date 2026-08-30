@@ -54,12 +54,65 @@ export class CompetitionsRepository {
     return competitions.map(withPrimarySourceFlat);
   }
 
+  // Ticket "Compétitions Athlete V2" §8-9 : pagination réelle pour le
+  // catalogue explorateur, distincte de findMany() ci-dessus qui reste
+  // totalement inchangée pour ses appelants existants (AddCompetitionModal
+  // côté Athlete et Coach, "+ Préparer une compétition"). Seule cette
+  // nouvelle méthode active la pagination — jamais déclenchée sans page/limit
+  // explicites côté contrôleur.
+  async findManyPaginated(params: {
+    search?: string;
+    page: number;
+    limit: number;
+    scope?: "upcoming" | "past";
+  }) {
+    const { search, page, limit, scope } = params;
+
+    const where: Record<string, unknown> = {};
+    if (search) {
+      where.OR = [
+        { nom: { contains: search, mode: "insensitive" } },
+        { ville: { contains: search, mode: "insensitive" } },
+        { pays: { contains: search, mode: "insensitive" } },
+      ];
+    }
+    if (scope === "upcoming" || scope === "past") {
+      // date_debut est une DATE métier (voir CLAUDE.md §20) : comparaison
+      // sur le jour courant, jamais un timestamp UTC naïf.
+      const startOfToday = new Date();
+      startOfToday.setUTCHours(0, 0, 0, 0);
+      where.date_debut = scope === "upcoming" ? { gte: startOfToday } : { lt: startOfToday };
+    }
+
+    // À venir : date_debut ASC (le plus proche d'abord) ; passées : DESC (le
+    // plus récent d'abord) ; sans scope : comportement par défaut DESC,
+    // identique à findMany() (ticket §9).
+    const orderBy = { date_debut: scope === "upcoming" ? ("asc" as const) : ("desc" as const) };
+
+    const [competitions, total] = await Promise.all([
+      this.prisma.competition.findMany({
+        where,
+        orderBy,
+        include: { sources: { orderBy: { created_at: "asc" }, take: 1 } },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.competition.count({ where }),
+    ]);
+
+    return { items: competitions.map(withPrimarySourceFlat), total, page, limit };
+  }
+
   async findById(id: string) {
     const competition = await this.prisma.competition.findUnique({
       where: { id },
-      include: { sources: { orderBy: { created_at: "asc" }, take: 1 } },
+      // Pas de take ici (contrairement à findMany) : une fiche détail n'a
+      // besoin que d'UNE competition, jamais de N+1 — récupérer toutes ses
+      // sources (au plus 2 aujourd'hui) est sans risque de performance,
+      // nécessaire pour la section "Sources des données" (ticket §20).
+      include: { sources: { orderBy: { created_at: "asc" } } },
     });
-    return competition ? withPrimarySourceFlat(competition) : null;
+    return competition ? withPrimarySourceFlatAndAllSources(competition) : null;
   }
 
   async upsertFromSource(data: ImportedCompetition): Promise<UpsertResult> {
@@ -181,6 +234,30 @@ function withPrimarySourceFlat<
   const { sources, ...rest } = competition;
   const primary = sources[0];
   return { ...rest, source: primary?.source ?? null, source_external_id: primary?.source_external_id ?? null };
+}
+
+// Fiche détail uniquement (ticket §20) : en plus du couple source/
+// source_external_id à plat (compatibilité historique, jamais retiré), expose
+// la liste complète des competition_source rattachées — nom de source et
+// source_url si connue, jamais l'id technique. `sources` ici est le tableau
+// complet (contrairement à withPrimarySourceFlat qui ne regarde que [0]).
+function withPrimarySourceFlatAndAllSources<
+  T extends CompetitionModel & { sources: { source: string; source_external_id: string; source_url: string | null }[] },
+>(
+  competition: T,
+): CompetitionModel & {
+  source: string | null;
+  source_external_id: string | null;
+  all_sources: { source: string; source_url: string | null }[];
+} {
+  const { sources, ...rest } = competition;
+  const primary = sources[0];
+  return {
+    ...rest,
+    source: primary?.source ?? null,
+    source_external_id: primary?.source_external_id ?? null,
+    all_sources: sources.map((s) => ({ source: s.source, source_url: s.source_url })),
+  };
 }
 
 function rawSourcePayload(data: ImportedCompetition) {

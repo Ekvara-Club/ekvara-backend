@@ -13,7 +13,7 @@ import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/au
 // via le pipeline de requête réel de Nest.
 describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () => {
   let app: INestApplication;
-  let service: { findOne: jest.Mock; findAll: jest.Mock };
+  let service: { findOne: jest.Mock; findAll: jest.Mock; findAllPaginated: jest.Mock };
   let entriesService: { findByCompetition: jest.Mock };
 
   const VALID_COMPETITION_ID = "2e5709b9-7385-4a79-be70-ddd3c573ae51";
@@ -21,7 +21,7 @@ describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () 
   let authCookie: string;
 
   beforeEach(async () => {
-    service = { findOne: jest.fn(), findAll: jest.fn() };
+    service = { findOne: jest.fn(), findAll: jest.fn(), findAllPaginated: jest.fn() };
     entriesService = { findByCompetition: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -87,6 +87,10 @@ describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () 
       pays: "France",
       niveau: "international",
       saison: null,
+      sources: [
+        { source: "fftda", sourceUrl: null },
+        { source: "world_taekwondo", sourceUrl: null },
+      ],
     };
     service.findOne.mockResolvedValue(view);
 
@@ -110,12 +114,63 @@ describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () 
         "pays",
         "niveau",
         "saison",
+        "sources",
       ].sort(),
     );
     // null reste null, jamais réécrit/omis par la sérialisation HTTP.
     expect(response.body.organisateur).toBeNull();
     expect(response.body.lieu).toBeNull();
     expect(response.body.saison).toBeNull();
+  });
+
+  describe("GET /competitions — pagination (ticket Compétitions Athlete V2 §8)", () => {
+    it("sans page/limit -> service.findAll (comportement historique, réponse = tableau brut)", async () => {
+      service.findAll.mockResolvedValue([{ id: "c1" }]);
+
+      const response = await request(app.getHttpServer())
+        .get("/competitions")
+        .set("Cookie", authCookie)
+        .expect(200);
+
+      expect(Array.isArray(response.body)).toBe(true);
+      expect(service.findAll).toHaveBeenCalledWith(undefined);
+    });
+
+    it("sans authentification -> 200 quand même (GET /competitions reste public, aucun guard)", async () => {
+      service.findAll.mockResolvedValue([]);
+      await request(app.getHttpServer()).get("/competitions").expect(200);
+    });
+
+    it("avec page/limit -> service.findAllPaginated, réponse = {items,total,page,limit}", async () => {
+      service.findAllPaginated.mockResolvedValue({ items: [{ id: "c1" }], total: 1, page: 1, limit: 20 });
+
+      const response = await request(app.getHttpServer())
+        .get("/competitions?page=1&limit=20&scope=upcoming")
+        .set("Cookie", authCookie)
+        .expect(200);
+
+      expect(response.body).toEqual({ items: [{ id: "c1" }], total: 1, page: 1, limit: 20 });
+      expect(service.findAllPaginated).toHaveBeenCalledWith({
+        search: undefined,
+        page: 1,
+        limit: 20,
+        scope: "upcoming",
+      });
+    });
+
+    it("scope invalide -> 400", async () => {
+      await request(app.getHttpServer())
+        .get("/competitions?page=1&limit=20&scope=bientot")
+        .set("Cookie", authCookie)
+        .expect(400);
+    });
+
+    it("limit > 50 -> 400", async () => {
+      await request(app.getHttpServer())
+        .get("/competitions?page=1&limit=500")
+        .set("Cookie", authCookie)
+        .expect(400);
+    });
   });
 
   describe("GET /competitions/:competitionId/entries", () => {

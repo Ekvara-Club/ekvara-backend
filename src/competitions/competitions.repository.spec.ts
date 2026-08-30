@@ -400,4 +400,109 @@ describe("CompetitionsRepository (intégration Postgres)", () => {
       expect(all.some((c) => c.id === competition.id)).toBe(true);
     });
   });
+
+  // Ticket "Compétitions Athlete V2" §8-9 : pagination réelle pour
+  // l'explorateur, méthode entièrement nouvelle et séparée de findMany().
+  describe("findManyPaginated — ticket Compétitions Athlete V2 §8-9", () => {
+    async function createFixtures() {
+      const future1 = await prisma.competition.create({
+        data: { nom: `Paginated Upcoming A ${runId}`, date_debut: new Date(Date.now() + 5 * 86400000), ville: "Nice", pays: "France" },
+      });
+      const future2 = await prisma.competition.create({
+        data: { nom: `Paginated Upcoming B ${runId}`, date_debut: new Date(Date.now() + 10 * 86400000), ville: "Lyon", pays: "France" },
+      });
+      const past1 = await prisma.competition.create({
+        data: { nom: `Paginated Past A ${runId}`, date_debut: new Date(Date.now() - 5 * 86400000), ville: "Berlin", pays: "Germany" },
+      });
+      const past2 = await prisma.competition.create({
+        data: { nom: `Paginated Past B ${runId}`, date_debut: new Date(Date.now() - 10 * 86400000), ville: "Madrid", pays: "Spain" },
+      });
+      createdCompetitionIds.push(future1.id, future2.id, past1.id, past2.id);
+      return { future1, future2, past1, past2 };
+    }
+
+    it("page/limit : pagine réellement (skip/take), total reflète le compte réel filtré", async () => {
+      const { future1, future2 } = await createFixtures();
+
+      const page1 = await repository.findManyPaginated({ search: `Paginated Upcoming`, page: 1, limit: 1, scope: "upcoming" });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.total).toBe(2);
+      expect(page1.page).toBe(1);
+      expect(page1.limit).toBe(1);
+      // scope=upcoming ⇒ date_debut ASC : le plus proche (future1) en premier.
+      expect(page1.items[0].id).toBe(future1.id);
+
+      const page2 = await repository.findManyPaginated({ search: `Paginated Upcoming`, page: 2, limit: 1, scope: "upcoming" });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0].id).toBe(future2.id);
+    });
+
+    it("scope=upcoming ne retourne que les compétitions futures, ASC", async () => {
+      const { future1, future2 } = await createFixtures();
+      const result = await repository.findManyPaginated({ search: `Paginated`, page: 1, limit: 10, scope: "upcoming" });
+      expect(result.items.map((c) => c.id)).toEqual([future1.id, future2.id]);
+    });
+
+    it("scope=past ne retourne que les compétitions passées, DESC", async () => {
+      const { past1, past2 } = await createFixtures();
+      const result = await repository.findManyPaginated({ search: `Paginated`, page: 1, limit: 10, scope: "past" });
+      expect(result.items.map((c) => c.id)).toEqual([past1.id, past2.id]);
+    });
+
+    it("search filtre par nom, ville OU pays (insensible à la casse)", async () => {
+      const { future1, past1 } = await createFixtures();
+
+      const byName = await repository.findManyPaginated({ search: `upcoming a ${runId}`, page: 1, limit: 10 });
+      expect(byName.items.map((c) => c.id)).toEqual([future1.id]);
+
+      const byVille = await repository.findManyPaginated({ search: "berlin", page: 1, limit: 10 });
+      expect(byVille.items.some((c) => c.id === past1.id)).toBe(true);
+
+      const byPays = await repository.findManyPaginated({ search: "germany", page: 1, limit: 10 });
+      expect(byPays.items.some((c) => c.id === past1.id)).toBe(true);
+    });
+
+    it("comportement inchangé de findMany() historique (sans pagination) après ajout de findManyPaginated", async () => {
+      await createFixtures();
+      const before = await prisma.competition.count();
+      const legacy = await repository.findMany();
+      expect(legacy).toHaveLength(before);
+      expect(Array.isArray(legacy)).toBe(true);
+    });
+  });
+
+  // Ticket "Compétitions Athlete V2" §20 : liste complète des sources sur la
+  // fiche détail (findById), au-delà du couple source/source_external_id
+  // primaire déjà existant et jamais modifié.
+  describe("findById — sources complètes (ticket §20)", () => {
+    it("compétition mono-source : sources = [cette source]", async () => {
+      const created = await upsertAndTrack(
+        fixture({ source: "fftda", sourceExternalId: extId("detail-single"), nom: "Detail Mono Source" }),
+      );
+      const detail = await repository.findById(created.competition.id);
+      expect(detail?.all_sources).toEqual([{ source: "fftda", source_url: null }]);
+    });
+
+    it("compétition multi-source (FFTDA + Martial Events, rattachement SAFE réel) : sources contient les deux", async () => {
+      const fftda = await upsertAndTrack(
+        fixture({
+          source: "fftda",
+          sourceExternalId: extId("detail-multi-fftda"),
+          nom: "Chpt. Fra. senior (combat) Detail",
+          dateDebut: new Date("2027-03-03T00:00:00Z"),
+        }),
+      );
+      await upsertAndTrack(
+        fixture({
+          source: "martial_events",
+          sourceExternalId: extId("detail-multi-me"),
+          nom: "Championnat de France Seniors 2027 Detail",
+          dateDebut: new Date("2027-03-03T00:00:00Z"),
+        }),
+      );
+
+      const detail = await repository.findById(fftda.competition.id);
+      expect(detail?.all_sources.map((s) => s.source).sort()).toEqual(["fftda", "martial_events"]);
+    });
+  });
 });
