@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { CoachTrainingsRepository, TrainingFieldsSnapshot } from "./coach-trainings.repository";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 
 // Signature createSessionWithAssignments/replaceAssignments élargie (ticket
 // "Présences Coach V1") pour porter group_id par athlète — sans intérêt pour
@@ -24,7 +25,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   beforeAll(() => {
     prisma = new PrismaService();
-    repository = new CoachTrainingsRepository(prisma);
+    repository = new CoachTrainingsRepository(prisma, new NotificationsRepository(prisma));
   }, 30000);
 
   afterEach(async () => {
@@ -38,14 +39,14 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
     await prisma.$disconnect();
   }, 30000);
 
-  async function makeCoach(): Promise<string> {
+  async function makeCoach(): Promise<{ coachId: string; userId: string }> {
     counter += 1;
     const user = await prisma.app_user.create({
       data: { email: `test-fixture-ct-coach-${runId}-${counter}@test.fr`, nom: "Coach", prenom: `F${counter}` },
     });
     createdUserIds.push(user.id);
     const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
-    return profile.id;
+    return { coachId: profile.id, userId: user.id };
   }
 
   async function makeAthlete(): Promise<string> {
@@ -64,7 +65,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   describe("createSessionWithAssignments", () => {
     it("crée la session, N training_session, N assignments et les group_sources en une transaction", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
       const athleteB = await makeAthlete();
       const group = await prisma.coach_group.create({ data: { coach_id: coachId, name: `Elite ${runId}` } });
@@ -74,6 +75,7 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
         fields(),
         athletesOf(athleteA, athleteB),
         [group.id],
+        actorUserId,
       );
 
       const detail = await repository.findSessionDetail(sessionId);
@@ -89,8 +91,8 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
     });
 
     it("aucun athlète -> zéro training_session créé, mais la session existe (cas groupIds pointant vers un groupe vide, accepté au niveau repository — la garde \"au moins un destinataire\" vit dans le service)", async () => {
-      const coachId = await makeCoach();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [], []);
+      const { coachId, userId: actorUserId } = await makeCoach();
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [], [], actorUserId);
 
       const detail = await repository.findSessionDetail(sessionId);
       expect(detail?.assignments).toEqual([]);
@@ -99,13 +101,13 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   describe("updateContentAndPropagate", () => {
     it("UNE modification de contenu est visible pour TOUS les athlètes assignés (test architectural du ticket §13)", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
       const athleteB = await makeAthlete();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA, athleteB), []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA, athleteB), [], actorUserId);
 
       const newStart = new Date("2026-09-05T20:30:00.000Z");
-      await repository.updateContentAndPropagate(sessionId, { date_debut: newStart });
+      await repository.updateContentAndPropagate(sessionId, { date_debut: newStart }, null);
 
       const rows = await prisma.training_session.findMany({ where: { athlete_id: { in: [athleteA, athleteB] } } });
       expect(rows).toHaveLength(2);
@@ -115,11 +117,11 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   describe("cancel", () => {
     it("propage statut='annule' à la session ET à tous les training_session assignés (soft, aucune ligne supprimée)", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [], actorUserId);
 
-      await repository.cancel(sessionId);
+      await repository.cancel(sessionId, actorUserId);
 
       const session = await prisma.coach_training_session.findUnique({ where: { id: sessionId } });
       const training = await prisma.training_session.findFirst({ where: { athlete_id: athleteA } });
@@ -131,17 +133,17 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   describe("replaceAssignments", () => {
     it("retire les training_session des athlètes absents du nouvel ensemble, ajoute les nouveaux, conserve les communs", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
       const athleteB = await makeAthlete();
       const athleteC = await makeAthlete();
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA, athleteB), []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA, athleteB), [], actorUserId);
 
       const before = await repository.findCurrentAssignments(sessionId);
       const bTrainingSessionId = before.find((a) => a.athlete_id === athleteB)!.training_session_id;
 
       // Nouvel ensemble : A (conservé), C (ajouté), B retiré.
-      await repository.replaceAssignments(sessionId, fields(), athletesOf(athleteC), [bTrainingSessionId], []);
+      await repository.replaceAssignments(sessionId, fields(), athletesOf(athleteC), [bTrainingSessionId], [], actorUserId);
 
       const after = await repository.findCurrentAssignments(sessionId);
       expect(after.map((a) => a.athlete_id).sort()).toEqual([athleteA, athleteC].sort());
@@ -149,13 +151,13 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
     });
 
     it("idempotent : rejouer le même remplacement ne duplique rien", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
       const group = await prisma.coach_group.create({ data: { coach_id: coachId, name: `G ${runId}` } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [group.id]);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [group.id], actorUserId);
 
-      await repository.replaceAssignments(sessionId, fields(), [], [], [group.id]);
-      await repository.replaceAssignments(sessionId, fields(), [], [], [group.id]);
+      await repository.replaceAssignments(sessionId, fields(), [], [], [group.id], actorUserId);
+      await repository.replaceAssignments(sessionId, fields(), [], [], [group.id], actorUserId);
 
       const assignments = await repository.findCurrentAssignments(sessionId);
       const groupSources = await prisma.coach_training_group_source.findMany({ where: { coach_training_session_id: sessionId } });
@@ -164,12 +166,12 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
     });
 
     it("remplace intégralement les group_sources (jamais un ajout cumulatif)", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const groupA = await prisma.coach_group.create({ data: { coach_id: coachId, name: `GA ${runId}` } });
       const groupB = await prisma.coach_group.create({ data: { coach_id: coachId, name: `GB ${runId}` } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [], [groupA.id]);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), [], [groupA.id], actorUserId);
 
-      await repository.replaceAssignments(sessionId, fields(), [], [], [groupB.id]);
+      await repository.replaceAssignments(sessionId, fields(), [], [], [groupB.id], actorUserId);
 
       const sources = await prisma.coach_training_group_source.findMany({ where: { coach_training_session_id: sessionId } });
       expect(sources.map((s) => s.group_id)).toEqual([groupB.id]);
@@ -178,10 +180,10 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   describe("suppression d'un groupe (ticket §21)", () => {
     it("supprime uniquement la provenance (group_source), jamais la session ni les assignments", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
       const group = await prisma.coach_group.create({ data: { coach_id: coachId, name: `G ${runId}` } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [group.id]);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [group.id], actorUserId);
 
       await prisma.coach_group.delete({ where: { id: group.id } });
 
@@ -194,10 +196,10 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
 
   describe("retrait coach_athlete (ticket §20)", () => {
     it("ne cascade jamais sur les training_session/assignments déjà créés", async () => {
-      const coachId = await makeCoach();
+      const { coachId, userId: actorUserId } = await makeCoach();
       const athleteA = await makeAthlete();
       await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
-      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), []);
+      const sessionId = await repository.createSessionWithAssignments(coachId, fields(), athletesOf(athleteA), [], actorUserId);
 
       await prisma.coach_athlete.delete({
         where: { coach_id_athlete_id: { coach_id: coachId, athlete_id: athleteA } },

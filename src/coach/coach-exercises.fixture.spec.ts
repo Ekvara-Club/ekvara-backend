@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CoachExercisesService } from "./coach-exercises.service";
 import { CoachExercisesRepository } from "./coach-exercises.repository";
 import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 
 // Test d'intégration contre la vraie base Postgres locale (ticket §25) :
 // fixtures réalistes (coach + groupe Elite A/B/C + groupe Junior C/D +
@@ -35,17 +36,20 @@ describe("CoachExercisesService — fixtures réalistes (intégration Postgres)"
   }, 30000);
 
   function buildService(): CoachExercisesService {
-    return new CoachExercisesService(new CoachExercisesRepository(prisma), new CoachDestinataireResolver(prisma));
+    return new CoachExercisesService(
+      new CoachExercisesRepository(prisma, new NotificationsRepository(prisma)),
+      new CoachDestinataireResolver(prisma),
+    );
   }
 
-  async function makeCoach(): Promise<string> {
+  async function makeCoach(): Promise<{ coachId: string; userId: string }> {
     counter += 1;
     const user = await prisma.app_user.create({
       data: { email: `test-fixture-cexfx-coach-${runId}-${counter}@test.fr`, nom: "Coach", prenom: `F${counter}` },
     });
     createdUserIds.push(user.id);
     const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
-    return profile.id;
+    return { coachId: profile.id, userId: user.id };
   }
 
   async function makeAthlete(prenom: string): Promise<string> {
@@ -59,8 +63,8 @@ describe("CoachExercisesService — fixtures réalistes (intégration Postgres)"
   }
 
   it("Elite (A/B/C), Elite+Junior (A/B/C/D), Elite+E (A/B/C/E), X étranger -> rollback, groupe étranger -> rollback, snapshot, suppression groupe/exercice, retrait coach_athlete, isolation coach A/B, idempotence réelle", async () => {
-    const coachId = await makeCoach();
-    const otherCoachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
+    const { coachId: otherCoachId } = await makeCoach();
 
     const athleteA = await makeAthlete("A");
     const athleteB = await makeAthlete("B");
@@ -89,21 +93,21 @@ describe("CoachExercisesService — fixtures réalistes (intégration Postgres)"
     const exercise = await service.createExercise(coachId, { title: `Cut avant ${runId}` });
 
     // --- Elite seul -> A/B/C ---
-    const p1 = await service.replaceAssignments(coachId, exercise.id, { groupIds: [elite.id], athleteIds: [] });
+    const p1 = await service.replaceAssignments(coachId, actorUserId, exercise.id, { groupIds: [elite.id], athleteIds: [] });
     expect(p1.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC].sort());
 
     // --- Elite + Junior -> union A/B/C/D ---
-    const p2 = await service.replaceAssignments(coachId, exercise.id, { groupIds: [elite.id, junior.id], athleteIds: [] });
+    const p2 = await service.replaceAssignments(coachId, actorUserId, exercise.id, { groupIds: [elite.id, junior.id], athleteIds: [] });
     expect(p2.assignments.athleteCount).toBe(4);
     expect(p2.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC, athleteD].sort());
 
     // --- Elite + E -> A/B/C/E ---
-    const p3 = await service.replaceAssignments(coachId, exercise.id, { groupIds: [elite.id], athleteIds: [athleteE] });
+    const p3 = await service.replaceAssignments(coachId, actorUserId, exercise.id, { groupIds: [elite.id], athleteIds: [athleteE] });
     expect(p3.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC, athleteE].sort());
 
     // --- Idempotence RÉELLE (service, double PUT identique) ---
     const before = await prisma.coach_exercise_assignment.count({ where: { exercise_id: exercise.id } });
-    const p3Again = await service.replaceAssignments(coachId, exercise.id, { groupIds: [elite.id], athleteIds: [athleteE] });
+    const p3Again = await service.replaceAssignments(coachId, actorUserId, exercise.id, { groupIds: [elite.id], athleteIds: [athleteE] });
     const after = await prisma.coach_exercise_assignment.count({ where: { exercise_id: exercise.id } });
     expect(after).toBe(before);
     expect(p3Again.assignments.athletes.map((a) => a.id).sort()).toEqual(p3.assignments.athletes.map((a) => a.id).sort());
@@ -111,25 +115,25 @@ describe("CoachExercisesService — fixtures réalistes (intégration Postgres)"
     // --- Destinataire non autorisé -> échec complet, rollback ---
     const assignmentsBefore = await prisma.coach_exercise_assignment.count({ where: { exercise_id: exercise.id } });
     await expect(
-      service.replaceAssignments(coachId, exercise.id, { groupIds: [], athleteIds: [athleteX] }),
+      service.replaceAssignments(coachId, actorUserId, exercise.id, { groupIds: [], athleteIds: [athleteX] }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(await prisma.coach_exercise_assignment.count({ where: { exercise_id: exercise.id } })).toBe(assignmentsBefore);
 
     // --- Groupe d'un autre coach -> échec complet, rollback ---
     await expect(
-      service.replaceAssignments(coachId, exercise.id, { groupIds: [foreignGroup.id], athleteIds: [] }),
+      service.replaceAssignments(coachId, actorUserId, exercise.id, { groupIds: [foreignGroup.id], athleteIds: [] }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(await prisma.coach_exercise_assignment.count({ where: { exercise_id: exercise.id } })).toBe(assignmentsBefore);
     expect(await prisma.coach_exercise_group_source.count({ where: { group_id: foreignGroup.id } })).toBe(0);
 
     // --- Snapshot groupe (ticket §12) : D rejoint Elite APRÈS coup, l'exercice publié via Elite seul ne le reçoit pas rétroactivement ---
     const snapshotExercise = await service.createExercise(coachId, { title: `Snapshot ${runId}` });
-    await service.replaceAssignments(coachId, snapshotExercise.id, { groupIds: [elite.id], athleteIds: [] });
+    await service.replaceAssignments(coachId, actorUserId, snapshotExercise.id, { groupIds: [elite.id], athleteIds: [] });
     await prisma.coach_group_athlete.create({ data: { group_id: elite.id, athlete_id: athleteD } });
     const unchanged = await service.findOneForCoach(snapshotExercise.id);
     expect(unchanged.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC].sort());
     // republish recalcule bien le snapshot :
-    const republished = await service.replaceAssignments(coachId, snapshotExercise.id, { groupIds: [elite.id], athleteIds: [] });
+    const republished = await service.replaceAssignments(coachId, actorUserId, snapshotExercise.id, { groupIds: [elite.id], athleteIds: [] });
     expect(republished.assignments.athletes.map((a) => a.id).sort()).toEqual(
       [athleteA, athleteB, athleteC, athleteD].sort(),
     );

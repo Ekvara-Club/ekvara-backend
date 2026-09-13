@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CoachTrainingsService } from "./coach-trainings.service";
 import { CoachTrainingsRepository } from "./coach-trainings.repository";
 import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 
 // Test d'intégration contre la vraie base Postgres locale (ticket §26) :
 // fixtures réalistes (coach + groupe Elite A/B/C + groupe Junior C/D +
@@ -60,19 +61,19 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
 
   function buildService(proxiedPrisma: PrismaService): CoachTrainingsService {
     return new CoachTrainingsService(
-      new CoachTrainingsRepository(proxiedPrisma),
+      new CoachTrainingsRepository(proxiedPrisma, new NotificationsRepository(proxiedPrisma)),
       new CoachDestinataireResolver(proxiedPrisma),
     );
   }
 
-  async function makeCoach(): Promise<string> {
+  async function makeCoach(): Promise<{ coachId: string; userId: string }> {
     counter += 1;
     const user = await prisma.app_user.create({
       data: { email: `test-fixture-fx-coach-${runId}-${counter}@test.fr`, nom: "Coach", prenom: `F${counter}` },
     });
     createdUserIds.push(user.id);
     const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
-    return profile.id;
+    return { coachId: profile.id, userId: user.id };
   }
 
   async function makeAthlete(prenom: string): Promise<string> {
@@ -86,8 +87,8 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
   }
 
   it("Elite (A/B/C), Elite+Junior (A/B/C/D), Elite+E (A/B/C/E), athlète X étranger -> 403 + rollback complet, groupe étranger -> 403 + rollback, snapshot groupe, requêtes constantes", async () => {
-    const coachId = await makeCoach();
-    const otherCoachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
+    const { coachId: otherCoachId } = await makeCoach();
 
     const athleteA = await makeAthlete("A");
     const athleteB = await makeAthlete("B");
@@ -114,7 +115,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     const service = buildService(prisma);
 
     // --- Elite seul -> A/B/C ---
-    const t1 = await service.createTraining(coachId, {
+    const t1 = await service.createTraining(coachId, actorUserId, {
       title: `T1 ${runId}`,
       startAt: "2026-09-05T18:00:00.000Z",
       groupIds: [elite.id],
@@ -122,7 +123,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     expect(t1.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC].sort());
 
     // --- Elite + Junior -> union A/B/C/D (C dédoublonné, présent dans les deux) ---
-    const t2 = await service.createTraining(coachId, {
+    const t2 = await service.createTraining(coachId, actorUserId, {
       title: `T2 ${runId}`,
       startAt: "2026-09-05T18:00:00.000Z",
       groupIds: [elite.id, junior.id],
@@ -131,7 +132,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     expect(t2.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC, athleteD].sort());
 
     // --- Elite + athlète individuel E -> A/B/C/E ---
-    const t3 = await service.createTraining(coachId, {
+    const t3 = await service.createTraining(coachId, actorUserId, {
       title: `T3 ${runId}`,
       startAt: "2026-09-05T18:00:00.000Z",
       groupIds: [elite.id],
@@ -142,7 +143,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     // --- Destinataire non autorisé (athlète X, autre coach) -> échec complet, rollback ---
     const before = await prisma.coach_training_session.count({ where: { coach_id: coachId } });
     await expect(
-      service.createTraining(coachId, {
+      service.createTraining(coachId, actorUserId, {
         title: `T-invalide ${runId}`,
         startAt: "2026-09-05T18:00:00.000Z",
         athleteIds: [athleteA, athleteX],
@@ -153,7 +154,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
 
     // --- Groupe d'un autre coach -> échec complet, rollback ---
     await expect(
-      service.createTraining(coachId, {
+      service.createTraining(coachId, actorUserId, {
         title: `T-invalide-2 ${runId}`,
         startAt: "2026-09-05T18:00:00.000Z",
         groupIds: [foreignGroup.id],
@@ -166,7 +167,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
 
     // --- Snapshot groupe (ticket §19) ---
     // T4 créé via Elite (A/B/C). D rejoint Elite APRÈS coup : T4 doit rester A/B/C.
-    const t4 = await service.createTraining(coachId, {
+    const t4 = await service.createTraining(coachId, actorUserId, {
       title: `T4 snapshot ${runId}`,
       startAt: "2026-09-05T18:00:00.000Z",
       groupIds: [elite.id],
@@ -179,7 +180,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     expect(t4Unchanged.assignments.athletes.map((a) => a.id).sort()).toEqual([athleteA, athleteB, athleteC].sort());
 
     // PUT assignments avec Elite -> snapshot RECALCULÉ : A/B/C/D.
-    const t4Updated = await service.replaceAssignments(coachId, t4.id, { groupIds: [elite.id], athleteIds: [] });
+    const t4Updated = await service.replaceAssignments(coachId, actorUserId, t4.id, { groupIds: [elite.id], athleteIds: [] });
     expect(t4Updated.assignments.athletes.map((a) => a.id).sort()).toEqual(
       [athleteA, athleteB, athleteC, athleteD].sort(),
     );
@@ -189,7 +190,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     // résolution de groupe, qui ajoute sa propre requête constante à part) :
     // seul N (nombre d'athlètes) varie entre les deux appels.
     const { proxied: proxiedSmall, count: countSmall } = withQueryCounter(prisma);
-    await buildService(proxiedSmall).createTraining(coachId, {
+    await buildService(proxiedSmall).createTraining(coachId, actorUserId, {
       title: `Perf 1 athlète ${runId}`,
       startAt: "2026-09-05T18:00:00.000Z",
       athleteIds: [athleteA],
@@ -197,7 +198,7 @@ describe("CoachTrainingsService — fixtures réalistes (intégration Postgres)"
     const queryCountFor1 = countSmall();
 
     const { proxied: proxiedLarge, count: countLarge } = withQueryCounter(prisma);
-    await buildService(proxiedLarge).createTraining(coachId, {
+    await buildService(proxiedLarge).createTraining(coachId, actorUserId, {
       title: `Perf 4 athlètes ${runId}`,
       startAt: "2026-09-05T18:00:00.000Z",
       athleteIds: [athleteA, athleteB, athleteC, athleteD],

@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationsRepository } from "../notifications/notifications.repository";
+import { EXERCISE_ASSIGNED, EXERCISE_RESOURCE } from "../notifications/notification.constants";
 
 const SAFE_USER_SELECT = { id: true, email: true, nom: true, prenom: true } as const;
 
@@ -44,7 +46,10 @@ export type CoachExerciseDetail = Prisma.exerciseGetPayload<{ select: typeof DET
 
 @Injectable()
 export class CoachExercisesRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsRepository,
+  ) {}
 
   async create(coachId: string, fields: ExerciseFieldsSnapshot): Promise<string> {
     const created = await this.prisma.exercise.create({
@@ -97,11 +102,19 @@ export class CoachExercisesRepository {
   // lignes dupliquées : ajoute/retire des lignes coach_exercise_assignment
   // pointant directement sur l'unique exercise, remplace intégralement les
   // group_sources.
+  //
+  // Ticket "Notifications in-app..." : EXERCISE_ASSIGNED uniquement pour les
+  // NOUVEAUX athlètes (toAddAthleteIds) — jamais pour un retrait, jamais pour
+  // un athlète déjà assigné avant cet appel (même politique que
+  // CoachTrainingsRepository.replaceAssignments). Update de contenu d'un
+  // exercice déjà assigné (CoachExercisesRepository.update) ne notifie
+  // jamais (ticket "EXERCISE" : "éviter le bruit").
   async replaceAssignments(
     exerciseId: string,
     toAddAthleteIds: string[],
     toRemoveAthleteIds: string[],
     newGroupIds: string[],
+    actorUserId: string,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       if (toRemoveAthleteIds.length > 0) {
@@ -120,6 +133,20 @@ export class CoachExercisesRepository {
           data: toAddAthleteIds.map((athleteId) => ({ exercise_id: exerciseId, athlete_id: athleteId })),
           skipDuplicates: true,
         });
+
+        const exercise = await tx.exercise.findUnique({ where: { id: exerciseId }, select: { titre: true } });
+        const athleteUsers = await this.notifications.resolveAthleteUserIds(tx, toAddAthleteIds);
+        const rows = athleteUsers.map((a) => ({
+          recipient_user_id: a.user_id,
+          actor_user_id: actorUserId,
+          context: "ATHLETE",
+          type: EXERCISE_ASSIGNED,
+          title: "Nouvel exercice",
+          message: `Ton coach t'a assigné un nouvel exercice : "${exercise?.titre ?? ""}".`,
+          resource_type: EXERCISE_RESOURCE,
+          resource_id: exerciseId,
+        }));
+        await this.notifications.createMany(tx, rows);
       }
 
       await tx.coach_exercise_group_source.deleteMany({ where: { exercise_id: exerciseId } });

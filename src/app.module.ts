@@ -10,6 +10,7 @@ import { TrainingsModule } from "./trainings/trainings.module";
 import { AuthModule } from "./auth/auth.module";
 import { ExercisesModule } from "./exercises/exercises.module";
 import { CoachModule } from "./coach/coach.module";
+import { NotificationsModule } from "./notifications/notifications.module";
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { CoachModule } from "./coach/coach.module";
     MetricsModule,
     TrainingsModule,
     ExercisesModule,
+    NotificationsModule,
     CoachModule,
   ],
 })

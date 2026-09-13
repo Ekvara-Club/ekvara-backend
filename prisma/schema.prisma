@@ -19,6 +19,12 @@ model app_user {
   athlete            athlete?
   metric_measurement metric_measurement[]
   coach_profile      coach_profile?
+
+  // Ticket "Notifications in-app Coach + Athlete V1" : une notification
+  // appartient toujours à app_user (jamais directement athlete_id/coach_id),
+  // voir modèle notification ci-dessous pour la justification complète.
+  notifications_received notification[] @relation("notification_recipient")
+  notifications_sent     notification[] @relation("notification_actor")
 }
 
 model athlete {
@@ -554,6 +560,44 @@ model coach_training_group_source {
 // (participation.statut, coach_competition_preparation.statut, ...) :
 // "present" | "absent" | "excuse". Pas de "retard" en V1 (décision
 // explicite, évaluée puis écartée pendant l'audit — voir rapport).
+// Notification in-app persistante (ticket "Notifications in-app Coach +
+// Athlete V1"). Appartient à un app_user (recipient_user_id), jamais
+// directement à athlete_id/coach_id : un même app_user peut posséder à la
+// fois athlete et coach_profile (utilisateur hybride, voir JwtPayload) —
+// recipient_user_id reste l'identité stable quel que soit le rôle actif au
+// moment de la lecture. `context` (ATHLETE|COACH) distingue l'interface pour
+// laquelle cette notification a du sens, pour qu'un compte hybride ne voie
+// jamais dans CoachFrontend une notification rédigée pour l'athlète (et
+// inversement) — convention varchar contrôlée en application, jamais un enum
+// Prisma (même politique que tous les statuts de ce projet : participation,
+// coach_competition_preparation, training_attendance...).
+// title/message sont un SNAPSHOT au moment de la création : si la ressource
+// source change ensuite (renommée) ou disparaît, l'historique de
+// notification reste compréhensible tel quel, jamais recalculé à la lecture.
+// resource_type/resource_id servent UNIQUEMENT au deep-link frontend — ne
+// remplacent jamais l'autorisation backend (la route de la ressource
+// continue de vérifier l'accès normalement à l'ouverture, voir
+// NotificationsService).
+model notification {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recipient_user_id String    @db.Uuid
+  actor_user_id     String?   @db.Uuid
+  context           String    @db.VarChar(10)
+  type              String    @db.VarChar(40)
+  title             String    @db.VarChar(255)
+  message           String?
+  resource_type     String?   @db.VarChar(30)
+  resource_id       String?   @db.Uuid
+  is_read           Boolean   @default(false)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  read_at           DateTime? @db.Timestamp(6)
+  recipient         app_user  @relation("notification_recipient", fields: [recipient_user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  actor             app_user? @relation("notification_actor", fields: [actor_user_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([recipient_user_id, created_at(sort: Desc)], map: "idx_notification_recipient_created")
+  @@index([recipient_user_id, is_read], map: "idx_notification_recipient_unread")
+}
+
 model training_attendance {
   id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   training_session_id String           @db.Uuid

@@ -48,7 +48,12 @@ export class CoachExercisesService {
     await this.repository.delete(exerciseId);
   }
 
-  async replaceAssignments(coachId: string, exerciseId: string, dto: ReplaceCoachExerciseAssignmentsDto) {
+  async replaceAssignments(
+    coachId: string,
+    actorUserId: string,
+    exerciseId: string,
+    dto: ReplaceCoachExerciseAssignmentsDto,
+  ) {
     const { athleteIds: newAthleteIds, groupIds: validGroupIds } = await this.destinataireResolver.resolve(
       coachId,
       dto.groupIds,
@@ -62,7 +67,7 @@ export class CoachExercisesService {
     const toAdd = newAthleteIds.filter((id) => !currentAthleteIds.has(id));
     const toRemove = [...currentAthleteIds].filter((id) => !newAthleteIdSet.has(id));
 
-    await this.repository.replaceAssignments(exerciseId, toAdd, toRemove, validGroupIds);
+    await this.repository.replaceAssignments(exerciseId, toAdd, toRemove, validGroupIds, actorUserId);
     return this.findOneForCoach(exerciseId);
   }
 }

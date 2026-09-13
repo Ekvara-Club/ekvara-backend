@@ -18,6 +18,7 @@ describe("CoachExercisesService", () => {
   let destinataireResolver: { resolve: jest.Mock };
 
   const COACH_ID = "coach-1";
+  const ACTOR_USER_ID = "coach-user-1";
   const EXERCISE_ID = "exercise-1";
   const ATHLETE_A = "athlete-a";
   const ATHLETE_B = "athlete-b";
@@ -124,7 +125,7 @@ describe("CoachExercisesService", () => {
       repository.findCurrentAssignments.mockResolvedValue([{ athlete_id: ATHLETE_A }, { athlete_id: ATHLETE_B }]);
       repository.findDetail.mockResolvedValue(detail());
 
-      await service.replaceAssignments(COACH_ID, EXERCISE_ID, { groupIds: [], athleteIds: ["athlete-c"] });
+      await service.replaceAssignments(COACH_ID, ACTOR_USER_ID, EXERCISE_ID, { groupIds: [], athleteIds: ["athlete-c"] });
 
       const [, toAdd, toRemove] = repository.replaceAssignments.mock.calls[0];
       expect(toAdd).toEqual(["athlete-c"]);
@@ -135,7 +136,7 @@ describe("CoachExercisesService", () => {
       destinataireResolver.resolve.mockRejectedValue(new ForbiddenException("non autorisé"));
 
       await expect(
-        service.replaceAssignments(COACH_ID, EXERCISE_ID, { groupIds: [], athleteIds: [ATHLETE_A] }),
+        service.replaceAssignments(COACH_ID, ACTOR_USER_ID, EXERCISE_ID, { groupIds: [], athleteIds: [ATHLETE_A] }),
       ).rejects.toBeInstanceOf(ForbiddenException);
       expect(repository.replaceAssignments).not.toHaveBeenCalled();
     });

@@ -4,6 +4,7 @@ import { AthletesModule } from "../athletes/athletes.module";
 import { MetricsModule } from "../metrics/metrics.module";
 import { WeightsModule } from "../weights/weights.module";
 import { GoalsModule } from "../goals/goals.module";
+import { NotificationsModule } from "../notifications/notifications.module";
 import { CoachController } from "./coach.controller";
 import { CoachService } from "./coach.service";
 import { CoachRepository } from "./coach.repository";
@@ -43,8 +44,11 @@ import { CoachGroupDashboardService } from "./coach-group-dashboard.service";
   // MetricsRepository.findAllMetricTypes() (ticket #2) et MetricsService
   // (ticket #6) tels quels. WeightsModule/GoalsModule : réutilisent
   // WeightsService/GoalsService tels quels pour le pilotage individuel coach
-  // (voir ticket #5) — aucun service coach parallèle.
-  imports: [AuthGuardsModule, AthletesModule, MetricsModule, WeightsModule, GoalsModule],
+  // (voir ticket #5) — aucun service coach parallèle. NotificationsModule
+  // (ticket "Notifications in-app Coach + Athlete V1") : NotificationsRepository
+  // pour les mutations déjà transactionnelles (trainings, exercises),
+  // NotificationsService pour goals/weight-targets.
+  imports: [AuthGuardsModule, AthletesModule, MetricsModule, WeightsModule, GoalsModule, NotificationsModule],
   controllers: [
     CoachController,
     CoachGroupsController,

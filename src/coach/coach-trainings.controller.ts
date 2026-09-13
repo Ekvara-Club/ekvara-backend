@@ -32,7 +32,7 @@ export class CoachTrainingsController {
   @Post()
   @UseGuards(CoachGuard)
   create(@Req() req: Request, @Body() dto: CreateCoachTrainingDto) {
-    return this.trainingsService.createTraining(req.user!.coachId!, dto);
+    return this.trainingsService.createTraining(req.user!.coachId!, req.user!.sub, dto);
   }
 
   // Jamais ?coachId= (ticket §11) : le coach vient exclusivement du JWT.
@@ -51,8 +51,12 @@ export class CoachTrainingsController {
 
   @Patch(":trainingId")
   @UseGuards(CoachTrainingOwnershipGuard)
-  updateContent(@Param("trainingId", ParseUUIDPipe) trainingId: string, @Body() dto: UpdateCoachTrainingDto) {
-    return this.trainingsService.updateContent(trainingId, dto);
+  updateContent(
+    @Req() req: Request,
+    @Param("trainingId", ParseUUIDPipe) trainingId: string,
+    @Body() dto: UpdateCoachTrainingDto,
+  ) {
+    return this.trainingsService.updateContent(trainingId, req.user!.sub, dto);
   }
 
   @Put(":trainingId/assignments")
@@ -62,7 +66,7 @@ export class CoachTrainingsController {
     @Param("trainingId", ParseUUIDPipe) trainingId: string,
     @Body() dto: ReplaceCoachTrainingAssignmentsDto,
   ) {
-    return this.trainingsService.replaceAssignments(req.user!.coachId!, trainingId, dto);
+    return this.trainingsService.replaceAssignments(req.user!.coachId!, req.user!.sub, trainingId, dto);
   }
 
   // Annulation "douce" (voir CoachTrainingsRepository.cancel et rapport §16),
@@ -71,8 +75,8 @@ export class CoachTrainingsController {
   @Delete(":trainingId")
   @HttpCode(HttpStatus.OK)
   @UseGuards(CoachTrainingOwnershipGuard)
-  cancel(@Param("trainingId", ParseUUIDPipe) trainingId: string) {
-    return this.trainingsService.cancel(trainingId);
+  cancel(@Req() req: Request, @Param("trainingId", ParseUUIDPipe) trainingId: string) {
+    return this.trainingsService.cancel(trainingId, req.user!.sub);
   }
 }
 

@@ -5,6 +5,7 @@ import { TrainingsRepository } from "../trainings/trainings.repository";
 import { CoachTrainingsService } from "./coach-trainings.service";
 import { CoachTrainingsRepository } from "./coach-trainings.repository";
 import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 
 // LE test le plus important de ce ticket (voir ticket §28) : une séance créée
 // via le service COACH doit apparaître dans le planning d'un athlète en
@@ -24,7 +25,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
   beforeAll(() => {
     prisma = new PrismaService();
     coachTrainingsService = new CoachTrainingsService(
-      new CoachTrainingsRepository(prisma),
+      new CoachTrainingsRepository(prisma, new NotificationsRepository(prisma)),
       new CoachDestinataireResolver(prisma),
     );
     trainingsService = new TrainingsService(new TrainingsRepository(prisma));
@@ -41,14 +42,14 @@ describe("Non-régression : planning athlète après création coach (intégrati
     await prisma.$disconnect();
   }, 30000);
 
-  async function makeCoach(): Promise<string> {
+  async function makeCoach(): Promise<{ coachId: string; userId: string }> {
     counter += 1;
     const user = await prisma.app_user.create({
       data: { email: `test-fixture-planning-coach-${runId}-${counter}@test.fr`, nom: "Coach", prenom: `F${counter}` },
     });
     createdUserIds.push(user.id);
     const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
-    return profile.id;
+    return { coachId: profile.id, userId: user.id };
   }
 
   async function makeAthlete(prenom: string): Promise<string> {
@@ -62,7 +63,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
   }
 
   it("coach crée une séance pour A/B/C -> présente dans le planning RÉEL de A, B, C — absente pour D non assigné", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
     const athleteB = await makeAthlete("B");
     const athleteC = await makeAthlete("C");
@@ -72,7 +73,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
       await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: id } });
     }
 
-    await coachTrainingsService.createTraining(coachId, {
+    await coachTrainingsService.createTraining(coachId, actorUserId, {
       title: `Combat collectif ${runId}`,
       startAt: "2026-09-05T20:00:00.000Z",
       athleteIds: [athleteA, athleteB, athleteC],
@@ -93,28 +94,28 @@ describe("Non-régression : planning athlète après création coach (intégrati
   });
 
   it("une modification d'horaire côté coach est immédiatement visible via findNextForAthlete (VRAI endpoint athlète)", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
     await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
 
-    const created = await coachTrainingsService.createTraining(coachId, {
+    const created = await coachTrainingsService.createTraining(coachId, actorUserId, {
       title: `Séance horaire ${runId}`,
       startAt: "2026-09-05T20:00:00.000Z",
       athleteIds: [athleteA],
     });
 
-    await coachTrainingsService.updateContent(created.id, { startAt: "2026-09-05T20:30:00.000Z" });
+    await coachTrainingsService.updateContent(created.id, actorUserId, { startAt: "2026-09-05T20:30:00.000Z" });
 
     const next = await trainingsService.findNextForAthlete(athleteA);
     expect(next?.startAt.toISOString()).toBe("2026-09-05T20:30:00.000Z");
   });
 
   it("une séance annulée côté coach disparaît de findNextForAthlete (réutilise INACTIVE_TRAINING_STATUSES existant, aucun filtre spécial)", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
     await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
 
-    const created = await coachTrainingsService.createTraining(coachId, {
+    const created = await coachTrainingsService.createTraining(coachId, actorUserId, {
       title: `Séance annulable ${runId}`,
       startAt: "2026-09-05T20:00:00.000Z",
       athleteIds: [athleteA],
@@ -122,7 +123,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
 
     expect((await trainingsService.findNextForAthlete(athleteA))?.title).toBe(`Séance annulable ${runId}`);
 
-    await coachTrainingsService.cancel(created.id);
+    await coachTrainingsService.cancel(created.id, actorUserId);
 
     expect(await trainingsService.findNextForAthlete(athleteA)).toBeNull();
     // Toujours dans l'historique complet (soft cancel, pas de suppression) :

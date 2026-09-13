@@ -7,6 +7,7 @@ import { GoalsService } from "../goals/goals.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { CoachAthleteAccessGuard } from "../auth/coach-athlete-access.guard";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/auth-test.helper";
 
 describe("CoachAthleteGoalsController (HTTP)", () => {
@@ -19,6 +20,7 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
     updateStep: jest.Mock;
   };
   let prisma: { coach_athlete: { findUnique: jest.Mock } };
+  let notificationsService: { notifyAthletes: jest.Mock };
 
   const COACH_ID = "c0ffee00-0000-4000-8000-000000000001";
   const ATHLETE_ID = "a1a1a1a1-0000-4000-8000-000000000001";
@@ -31,12 +33,17 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
   beforeEach(async () => {
     goalsService = {
       createGoal: jest.fn(),
-      findAllForAthlete: jest.fn(),
+      // Défaut [] (aucun objectif existant) : suffisant pour les tests qui
+      // n'exercent pas le diff de notification sur updateStatus (voir
+      // CoachAthleteGoalsController.updateStatus, qui appelle
+      // findAllForAthlete pour comparer le statut avant/après).
+      findAllForAthlete: jest.fn().mockResolvedValue([]),
       updateStatus: jest.fn(),
       addStep: jest.fn(),
       updateStep: jest.fn(),
     };
     prisma = { coach_athlete: { findUnique: jest.fn() } };
+    notificationsService = { notifyAthletes: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule()],
@@ -44,6 +51,7 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
       providers: [
         { provide: GoalsService, useValue: goalsService },
         { provide: PrismaService, useValue: prisma },
+        { provide: NotificationsService, useValue: notificationsService },
         JwtAuthGuard,
         CoachAthleteAccessGuard,
       ],
@@ -91,7 +99,7 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
       expect(goalsService.createGoal).not.toHaveBeenCalled();
     });
 
-    it("athlete assigné -> 201, même DTO que l'athlète", async () => {
+    it("athlete assigné -> 201, même DTO que l'athlète, notifie l'athlète (GOAL_UPDATED)", async () => {
       prisma.coach_athlete.findUnique.mockResolvedValue({ id: "link-1" });
       goalsService.createGoal.mockResolvedValue({ id: GOAL_ID, titre: "Médaille régionale" });
 
@@ -103,6 +111,10 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
 
       expect(res.body.id).toBe(GOAL_ID);
       expect(goalsService.createGoal).toHaveBeenCalledWith(ATHLETE_ID, { titre: "Médaille régionale" });
+      expect(notificationsService.notifyAthletes).toHaveBeenCalledWith(
+        [ATHLETE_ID],
+        expect.objectContaining({ type: "GOAL_UPDATED", actorUserId: "u-coach", resourceId: GOAL_ID }),
+      );
     });
   });
 
@@ -142,9 +154,10 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
         .expect(404);
     });
 
-    it("mise à jour valide -> 200", async () => {
+    it("mise à jour valide, statut réellement différent -> 200, notifie l'athlète", async () => {
       prisma.coach_athlete.findUnique.mockResolvedValue({ id: "link-1" });
-      goalsService.updateStatus.mockResolvedValue({ id: GOAL_ID, statut: "atteint" });
+      goalsService.findAllForAthlete.mockResolvedValue([{ id: GOAL_ID, titre: "Médaille régionale", statut: "en_cours" }]);
+      goalsService.updateStatus.mockResolvedValue({ id: GOAL_ID, titre: "Médaille régionale", statut: "atteint" });
 
       const res = await request(app.getHttpServer())
         .patch(`/coach/athletes/${ATHLETE_ID}/goals/${GOAL_ID}`)
@@ -154,6 +167,24 @@ describe("CoachAthleteGoalsController (HTTP)", () => {
 
       expect(res.body.statut).toBe("atteint");
       expect(goalsService.updateStatus).toHaveBeenCalledWith(ATHLETE_ID, GOAL_ID, { statut: "atteint" });
+      expect(notificationsService.notifyAthletes).toHaveBeenCalledWith(
+        [ATHLETE_ID],
+        expect.objectContaining({ type: "GOAL_UPDATED", actorUserId: "u-coach", resourceId: GOAL_ID }),
+      );
+    });
+
+    it("statut renvoyé identique à l'actuel -> 200, AUCUNE notification (idempotence)", async () => {
+      prisma.coach_athlete.findUnique.mockResolvedValue({ id: "link-1" });
+      goalsService.findAllForAthlete.mockResolvedValue([{ id: GOAL_ID, titre: "Médaille régionale", statut: "atteint" }]);
+      goalsService.updateStatus.mockResolvedValue({ id: GOAL_ID, titre: "Médaille régionale", statut: "atteint" });
+
+      await request(app.getHttpServer())
+        .patch(`/coach/athletes/${ATHLETE_ID}/goals/${GOAL_ID}`)
+        .set("Cookie", coachCookie)
+        .send({ statut: "atteint" })
+        .expect(200);
+
+      expect(notificationsService.notifyAthletes).not.toHaveBeenCalled();
     });
   });
 

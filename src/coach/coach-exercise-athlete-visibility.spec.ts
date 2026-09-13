@@ -5,6 +5,7 @@ import { ExercisesRepository } from "../exercises/exercises.repository";
 import { CoachExercisesService } from "./coach-exercises.service";
 import { CoachExercisesRepository } from "./coach-exercises.repository";
 import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 
 // LE test le plus important de ce ticket (voir ticket §26, même principe que
 // coach-training-athlete-planning.spec.ts en ticket #3) : la publication
@@ -23,7 +24,7 @@ describe("Non-régression : visibilité athlète après publication coach (inté
   beforeAll(() => {
     prisma = new PrismaService();
     coachExercisesService = new CoachExercisesService(
-      new CoachExercisesRepository(prisma),
+      new CoachExercisesRepository(prisma, new NotificationsRepository(prisma)),
       new CoachDestinataireResolver(prisma),
     );
     exercisesService = new ExercisesService(new ExercisesRepository(prisma));
@@ -44,14 +45,14 @@ describe("Non-régression : visibilité athlète après publication coach (inté
     await prisma.$disconnect();
   }, 30000);
 
-  async function makeCoach(): Promise<string> {
+  async function makeCoach(): Promise<{ coachId: string; userId: string }> {
     counter += 1;
     const user = await prisma.app_user.create({
       data: { email: `test-fixture-exvis-coach-${runId}-${counter}@test.fr`, nom: "Coach", prenom: `F${counter}` },
     });
     createdUserIds.push(user.id);
     const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
-    return profile.id;
+    return { coachId: profile.id, userId: user.id };
   }
 
   async function makeAthlete(prenom: string): Promise<string> {
@@ -65,7 +66,7 @@ describe("Non-régression : visibilité athlète après publication coach (inté
   }
 
   it("G global visible par A et B ; X publié à A absent pour B ; Y publié à B absent pour A", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
     const athleteB = await makeAthlete("B");
     await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
@@ -76,11 +77,11 @@ describe("Non-régression : visibilité athlète après publication coach (inté
 
     const x = await coachExercisesService.createExercise(coachId, { title: `X publié A ${runId}` });
     createdExerciseIds.push(x.id);
-    await coachExercisesService.replaceAssignments(coachId, x.id, { groupIds: [], athleteIds: [athleteA] });
+    await coachExercisesService.replaceAssignments(coachId, actorUserId, x.id, { groupIds: [], athleteIds: [athleteA] });
 
     const y = await coachExercisesService.createExercise(coachId, { title: `Y publié B ${runId}` });
     createdExerciseIds.push(y.id);
-    await coachExercisesService.replaceAssignments(coachId, y.id, { groupIds: [], athleteIds: [athleteB] });
+    await coachExercisesService.replaceAssignments(coachId, actorUserId, y.id, { groupIds: [], athleteIds: [athleteB] });
 
     // Les VRAIS GET /exercises et GET /exercises/:id athlète, aucune connaissance du monde coach.
     const listForA = await exercisesService.findAll(athleteA);
@@ -103,7 +104,7 @@ describe("Non-régression : visibilité athlète après publication coach (inté
   });
 
   it("athlète sans aucune publication ne voit que les exercices globaux", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteC = await makeAthlete("C");
     await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteC } });
 
@@ -116,13 +117,13 @@ describe("Non-régression : visibilité athlète après publication coach (inté
   });
 
   it("une modification de contenu côté coach est immédiatement visible via le vrai GET /exercises/:id athlète (une seule ligne partagée)", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
     await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
 
     const x = await coachExercisesService.createExercise(coachId, { title: `Avant ${runId}` });
     createdExerciseIds.push(x.id);
-    await coachExercisesService.replaceAssignments(coachId, x.id, { groupIds: [], athleteIds: [athleteA] });
+    await coachExercisesService.replaceAssignments(coachId, actorUserId, x.id, { groupIds: [], athleteIds: [athleteA] });
 
     await coachExercisesService.updateContent(x.id, { title: `Après ${runId}` });
 
@@ -131,12 +132,12 @@ describe("Non-régression : visibilité athlète après publication coach (inté
   });
 
   it("un exercice supprimé par le coach disparaît immédiatement du GET /exercises athlète", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
     await prisma.coach_athlete.create({ data: { coach_id: coachId, athlete_id: athleteA } });
 
     const x = await coachExercisesService.createExercise(coachId, { title: `À supprimer ${runId}` });
-    await coachExercisesService.replaceAssignments(coachId, x.id, { groupIds: [], athleteIds: [athleteA] });
+    await coachExercisesService.replaceAssignments(coachId, actorUserId, x.id, { groupIds: [], athleteIds: [athleteA] });
     expect((await exercisesService.findAll(athleteA)).map((e) => e.titre)).toContain(`À supprimer ${runId}`);
 
     await coachExercisesService.deleteExercise(x.id);

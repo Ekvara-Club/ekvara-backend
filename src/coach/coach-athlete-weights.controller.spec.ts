@@ -7,6 +7,7 @@ import { WeightsService } from "../weights/weights.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { CoachAthleteAccessGuard } from "../auth/coach-athlete-access.guard";
 import { PrismaService } from "../prisma/prisma.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/auth-test.helper";
 
 // Test HTTP : ce contrôleur n'a AUCUNE logique propre, uniquement le guard +
@@ -18,6 +19,7 @@ describe("CoachAthleteWeightsController (HTTP)", () => {
   let app: INestApplication;
   let weightsService: { getWeightSummary: jest.Mock; createWeightTarget: jest.Mock };
   let prisma: { coach_athlete: { findUnique: jest.Mock } };
+  let notificationsService: { notifyAthletes: jest.Mock };
 
   const COACH_ID = "c0ffee00-0000-4000-8000-000000000001";
   const ATHLETE_ID = "a1a1a1a1-0000-4000-8000-000000000001";
@@ -28,6 +30,7 @@ describe("CoachAthleteWeightsController (HTTP)", () => {
   beforeEach(async () => {
     weightsService = { getWeightSummary: jest.fn(), createWeightTarget: jest.fn() };
     prisma = { coach_athlete: { findUnique: jest.fn() } };
+    notificationsService = { notifyAthletes: jest.fn().mockResolvedValue(undefined) };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule()],
@@ -35,6 +38,7 @@ describe("CoachAthleteWeightsController (HTTP)", () => {
       providers: [
         { provide: WeightsService, useValue: weightsService },
         { provide: PrismaService, useValue: prisma },
+        { provide: NotificationsService, useValue: notificationsService },
         JwtAuthGuard,
         CoachAthleteAccessGuard,
       ],
@@ -113,8 +117,15 @@ describe("CoachAthleteWeightsController (HTTP)", () => {
       expect(weightsService.createWeightTarget).not.toHaveBeenCalled();
     });
 
-    it("athlete assigné -> 201, délègue au même DTO/service que l'athlète", async () => {
+    it("athlete assigné -> 201, délègue au même DTO/service que l'athlète, notifie (premier objectif)", async () => {
       prisma.coach_athlete.findUnique.mockResolvedValue({ id: "link-1" });
+      weightsService.getWeightSummary.mockResolvedValue({
+        currentWeight: null,
+        measuredAt: null,
+        target: null,
+        differenceToTarget: null,
+        weeklyChange: null,
+      });
       weightsService.createWeightTarget.mockResolvedValue({ id: "target-1", weight: 74, targetDate: null, competitionId: null, actif: true });
 
       const res = await request(app.getHttpServer())
@@ -125,6 +136,31 @@ describe("CoachAthleteWeightsController (HTTP)", () => {
 
       expect(res.body.id).toBe("target-1");
       expect(weightsService.createWeightTarget).toHaveBeenCalledWith(ATHLETE_ID, { weight: 74 });
+      // Aucun objectif actif avant -> premier objectif = changement réel, notifié.
+      expect(notificationsService.notifyAthletes).toHaveBeenCalledWith(
+        [ATHLETE_ID],
+        expect.objectContaining({ type: "WEIGHT_TARGET_UPDATED", actorUserId: "u-coach" }),
+      );
+    });
+
+    it("mêmes valeurs que l'objectif actif -> pas de notification (idempotence)", async () => {
+      prisma.coach_athlete.findUnique.mockResolvedValue({ id: "link-1" });
+      weightsService.getWeightSummary.mockResolvedValue({
+        currentWeight: 70,
+        measuredAt: new Date().toISOString(),
+        target: { weight: 74, targetDate: null, competitionId: null },
+        differenceToTarget: -4,
+        weeklyChange: null,
+      });
+      weightsService.createWeightTarget.mockResolvedValue({ id: "target-2", weight: 74, targetDate: null, competitionId: null, actif: true });
+
+      await request(app.getHttpServer())
+        .post(`/coach/athletes/${ATHLETE_ID}/weight-targets`)
+        .set("Cookie", coachCookie)
+        .send({ weight: 74 })
+        .expect(201);
+
+      expect(notificationsService.notifyAthletes).not.toHaveBeenCalled();
     });
 
     it("jamais de coachId accepté dans le body (whitelist)", async () => {

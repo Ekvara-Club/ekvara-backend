@@ -4,6 +4,7 @@ import {
   CoachTrainingSummary,
   CoachTrainingsRepository,
   TrainingFieldsSnapshot,
+  TrainingUpdateNotify,
 } from "./coach-trainings.repository";
 import { CoachDestinataireResolver, ResolvedDestinataires } from "./coach-destinataire-resolver";
 import { CreateCoachTrainingDto } from "./dto/create-coach-training.dto";
@@ -17,14 +18,20 @@ export class CoachTrainingsService {
     private readonly destinataireResolver: CoachDestinataireResolver,
   ) {}
 
-  async createTraining(coachId: string, dto: CreateCoachTrainingDto) {
+  async createTraining(coachId: string, actorUserId: string, dto: CreateCoachTrainingDto) {
     const fields = toFieldsSnapshot(dto);
     assertEndAfterStart(fields.date_debut, fields.date_fin);
 
     const resolved = await this.destinataireResolver.resolve(coachId, dto.groupIds ?? [], dto.athleteIds ?? []);
     const athletes = toAthletesWithGroupLabel(resolved);
 
-    const sessionId = await this.repository.createSessionWithAssignments(coachId, fields, athletes, resolved.groupIds);
+    const sessionId = await this.repository.createSessionWithAssignments(
+      coachId,
+      fields,
+      athletes,
+      resolved.groupIds,
+      actorUserId,
+    );
     return this.findOneForCoach(sessionId);
   }
 
@@ -44,7 +51,7 @@ export class CoachTrainingsService {
     return toDetailView(detail);
   }
 
-  async updateContent(trainingSessionId: string, dto: UpdateCoachTrainingDto) {
+  async updateContent(trainingSessionId: string, actorUserId: string, dto: UpdateCoachTrainingDto) {
     assertAtLeastOneField(dto);
 
     const current = await this.repository.findSessionDetail(trainingSessionId);
@@ -56,11 +63,30 @@ export class CoachTrainingsService {
     assertEndAfterStart(merged.date_debut, merged.date_fin);
 
     const patch = toPartialFieldsSnapshot(dto);
-    await this.repository.updateContentAndPropagate(trainingSessionId, patch);
+
+    // Ticket "Notifications in-app..." §IDEMPOTENCE : compare le patch aux
+    // valeurs ACTUELLES (jamais le simple fait qu'un PATCH ait été appelé)
+    // — un champ renvoyé avec sa valeur déjà en place ne déclenche aucune
+    // notification. Tous les champs de TrainingFieldsSnapshot sont du
+    // contenu réellement exposé à l'athlète sur training_session (titre,
+    // type, sous-type, dates, lieu, niveau, description) : n'importe lequel
+    // d'entre eux change = changement significatif (ticket "TRAINING
+    // UPDATE").
+    const currentSnapshot = toFieldsSnapshot(current);
+    const notify: TrainingUpdateNotify | null = hasSignificantChange(currentSnapshot, patch)
+      ? { actorUserId, snapshot: { ...currentSnapshot, ...patch } }
+      : null;
+
+    await this.repository.updateContentAndPropagate(trainingSessionId, patch, notify);
     return this.findOneForCoach(trainingSessionId);
   }
 
-  async replaceAssignments(coachId: string, trainingSessionId: string, dto: ReplaceCoachTrainingAssignmentsDto) {
+  async replaceAssignments(
+    coachId: string,
+    actorUserId: string,
+    trainingSessionId: string,
+    dto: ReplaceCoachTrainingAssignmentsDto,
+  ) {
     const current = await this.repository.findSessionDetail(trainingSessionId);
     if (!current) {
       throw new NotFoundException(`Séance ${trainingSessionId} introuvable`);
@@ -97,15 +123,36 @@ export class CoachTrainingsService {
       toAdd,
       toRemove.map((a) => a.training_session_id),
       resolved.groupIds,
+      actorUserId,
     );
 
     return this.findOneForCoach(trainingSessionId);
   }
 
-  async cancel(trainingSessionId: string) {
-    await this.repository.cancel(trainingSessionId);
+  async cancel(trainingSessionId: string, actorUserId: string) {
+    await this.repository.cancel(trainingSessionId, actorUserId);
     return this.findOneForCoach(trainingSessionId);
   }
+}
+
+// Ticket "Notifications in-app..." §IDEMPOTENCE : compare uniquement les
+// clés PRÉSENTES dans `patch` (un PATCH partiel ne touche jamais les champs
+// absents) contre leur valeur actuelle correspondante dans `current`. Dates
+// comparées par timestamp (jamais par référence d'objet Date).
+function hasSignificantChange(
+  current: TrainingFieldsSnapshot,
+  patch: Partial<TrainingFieldsSnapshot>,
+): boolean {
+  return (Object.keys(patch) as (keyof TrainingFieldsSnapshot)[]).some((key) => {
+    const before = current[key];
+    const after = patch[key];
+    if (before instanceof Date || after instanceof Date) {
+      const beforeTime = before instanceof Date ? before.getTime() : null;
+      const afterTime = after instanceof Date ? after.getTime() : null;
+      return beforeTime !== afterTime;
+    }
+    return (before ?? null) !== (after ?? null);
+  });
 }
 
 function toFieldsSnapshot(source: {

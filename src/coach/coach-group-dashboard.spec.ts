@@ -9,6 +9,7 @@ import { MetricsRepository } from "../metrics/metrics.repository";
 import { CoachTrainingsService } from "./coach-trainings.service";
 import { CoachTrainingsRepository } from "./coach-trainings.repository";
 import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 import { CoachTrainingAttendanceService } from "./coach-training-attendance.service";
 import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.repository";
 import { CoachCompetitionPreparationsRepository } from "./coach-competition-preparations.repository";
@@ -36,7 +37,10 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
 
   beforeAll(() => {
     prisma = new PrismaService();
-    trainingsService = new CoachTrainingsService(new CoachTrainingsRepository(prisma), new CoachDestinataireResolver(prisma));
+    trainingsService = new CoachTrainingsService(
+      new CoachTrainingsRepository(prisma, new NotificationsRepository(prisma)),
+      new CoachDestinataireResolver(prisma),
+    );
     attendanceService = new CoachTrainingAttendanceService(new CoachTrainingAttendanceRepository(prisma));
     const metricsRepository = new MetricsRepository(prisma);
     const dashboardService = new CoachDashboardService(
@@ -48,7 +52,7 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
       new CoachGroupsRepository(prisma),
       dashboardService,
       attendanceService,
-      new CoachTrainingsRepository(prisma),
+      new CoachTrainingsRepository(prisma, new NotificationsRepository(prisma)),
       new CoachCompetitionPreparationsRepository(prisma),
     );
   }, 30000);
@@ -90,6 +94,15 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
     createdUserIds.push(user.id);
     const athlete = await prisma.athlete.create({ data: { user_id: user.id } });
     return athlete.id;
+  }
+
+  // Ticket "Notifications in-app..." : createTraining/cancel exigent
+  // désormais un actorUserId (app_user.id, jamais coach_profile.id) — résolu
+  // à la demande plutôt que d'élargir makeCoach() (utilisé par ~15 tests de
+  // ce fichier sans rapport avec les notifications).
+  async function actorUserIdFor(coachId: string): Promise<string> {
+    const profile = await prisma.coach_profile.findUniqueOrThrow({ where: { id: coachId }, select: { user_id: true } });
+    return profile.user_id;
   }
 
   async function linkAthlete(coachId: string, athleteId: string): Promise<void> {
@@ -151,6 +164,7 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
 
   it("formule attendance groupe exacte (ticket §61) : 2 séances, A/B/C mixtes, non renseigné != absent", async () => {
     const coachId = await makeCoach();
+    const actorUserId = await actorUserIdFor(coachId);
     const a = await makeAthlete("A");
     const b = await makeAthlete("B");
     const c = await makeAthlete("C");
@@ -162,8 +176,8 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
     await addToGroup(groupId, b);
     await addToGroup(groupId, c);
 
-    const s1 = await trainingsService.createTraining(coachId, { title: `S1 ${runId}`, startAt: daysFromNow(-2), groupIds: [groupId] });
-    const s2 = await trainingsService.createTraining(coachId, { title: `S2 ${runId}`, startAt: daysFromNow(-1), groupIds: [groupId] });
+    const s1 = await trainingsService.createTraining(coachId, actorUserId, { title: `S1 ${runId}`, startAt: daysFromNow(-2), groupIds: [groupId] });
+    const s2 = await trainingsService.createTraining(coachId, actorUserId, { title: `S2 ${runId}`, startAt: daysFromNow(-1), groupIds: [groupId] });
 
     await attendanceService.putAttendance(s1.id, {
       attendances: [
@@ -194,14 +208,15 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
 
   it("séance annulée : totalement exclue des statistiques groupe (ticket §62)", async () => {
     const coachId = await makeCoach();
+    const actorUserId = await actorUserIdFor(coachId);
     const a = await makeAthlete("A");
     await linkAthlete(coachId, a);
     const groupId = await makeGroup(coachId, "Annulee");
     await addToGroup(groupId, a);
 
-    const training = await trainingsService.createTraining(coachId, { title: `Annulée ${runId}`, startAt: daysFromNow(-1), groupIds: [groupId] });
+    const training = await trainingsService.createTraining(coachId, actorUserId, { title: `Annulée ${runId}`, startAt: daysFromNow(-1), groupIds: [groupId] });
     await attendanceService.putAttendance(training.id, { attendances: [{ athleteId: a, status: "present" }] });
-    await trainingsService.cancel(training.id);
+    await trainingsService.cancel(training.id, actorUserId);
 
     const result = await groupDashboardService.getGroupDashboard(coachId, groupId);
 
@@ -212,6 +227,7 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
 
   it("snapshot vs membership actuel (ticket §63-65) : ancien membre compte dans l'historique, pas dans le roster actuel ; nouveau membre l'inverse", async () => {
     const coachId = await makeCoach();
+    const actorUserId = await actorUserIdFor(coachId);
     const a = await makeAthlete("A");
     const b = await makeAthlete("B");
     const c = await makeAthlete("C");
@@ -225,7 +241,7 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
     await addToGroup(groupId, b);
     await addToGroup(groupId, c); // composition au moment de la séance : A, B, C
 
-    const training = await trainingsService.createTraining(coachId, { title: `Historique ${runId}`, startAt: daysFromNow(-1), groupIds: [groupId] });
+    const training = await trainingsService.createTraining(coachId, actorUserId, { title: `Historique ${runId}`, startAt: daysFromNow(-1), groupIds: [groupId] });
     await attendanceService.putAttendance(training.id, {
       attendances: [
         { athleteId: a, status: "present" },
@@ -355,6 +371,7 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
 
   it("assiduité faible (seuil validé §23) : recordedSessions >= 3 ET taux < 70% -> ATTENDANCE_LOW ; en dessous du seuil de volume -> pas d'attention", async () => {
     const coachId = await makeCoach();
+    const actorUserId = await actorUserIdFor(coachId);
     const a = await makeAthlete("A"); // 1 présence sur 1 -> pas assez de données, jamais ATTENDANCE_LOW
     const b = await makeAthlete("B"); // 1 présent / 3 -> 33%, assez de données -> ATTENDANCE_LOW
     await linkAthlete(coachId, a);
@@ -363,12 +380,12 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
     await addToGroup(groupId, a);
     await addToGroup(groupId, b);
 
-    const sA = await trainingsService.createTraining(coachId, { title: `A1 ${runId}`, startAt: daysFromNow(-1), athleteIds: [a] });
+    const sA = await trainingsService.createTraining(coachId, actorUserId, { title: `A1 ${runId}`, startAt: daysFromNow(-1), athleteIds: [a] });
     await attendanceService.putAttendance(sA.id, { attendances: [{ athleteId: a, status: "absent" }] });
 
-    const sB1 = await trainingsService.createTraining(coachId, { title: `B1 ${runId}`, startAt: daysFromNow(-3), athleteIds: [b] });
-    const sB2 = await trainingsService.createTraining(coachId, { title: `B2 ${runId}`, startAt: daysFromNow(-2), athleteIds: [b] });
-    const sB3 = await trainingsService.createTraining(coachId, { title: `B3 ${runId}`, startAt: daysFromNow(-1), athleteIds: [b] });
+    const sB1 = await trainingsService.createTraining(coachId, actorUserId, { title: `B1 ${runId}`, startAt: daysFromNow(-3), athleteIds: [b] });
+    const sB2 = await trainingsService.createTraining(coachId, actorUserId, { title: `B2 ${runId}`, startAt: daysFromNow(-2), athleteIds: [b] });
+    const sB3 = await trainingsService.createTraining(coachId, actorUserId, { title: `B3 ${runId}`, startAt: daysFromNow(-1), athleteIds: [b] });
     await attendanceService.putAttendance(sB1.id, { attendances: [{ athleteId: b, status: "present" }] });
     await attendanceService.putAttendance(sB2.id, { attendances: [{ athleteId: b, status: "absent" }] });
     await attendanceService.putAttendance(sB3.id, { attendances: [{ athleteId: b, status: "absent" }] });
@@ -387,13 +404,14 @@ describe("Dashboard groupe Coach V1 — intégration Postgres réelle", () => {
 
   it("cohérence AthleteDetail <-> GroupDetail (ticket §10) : même formule, mêmes chiffres pour le même athlète/période", async () => {
     const coachId = await makeCoach();
+    const actorUserId = await actorUserIdFor(coachId);
     const a = await makeAthlete("A");
     await linkAthlete(coachId, a);
     const groupId = await makeGroup(coachId, "Coherence");
     await addToGroup(groupId, a);
 
-    const s1 = await trainingsService.createTraining(coachId, { title: `C1 ${runId}`, startAt: daysFromNow(-2), athleteIds: [a] });
-    const s2 = await trainingsService.createTraining(coachId, { title: `C2 ${runId}`, startAt: daysFromNow(-1), athleteIds: [a] });
+    const s1 = await trainingsService.createTraining(coachId, actorUserId, { title: `C1 ${runId}`, startAt: daysFromNow(-2), athleteIds: [a] });
+    const s2 = await trainingsService.createTraining(coachId, actorUserId, { title: `C2 ${runId}`, startAt: daysFromNow(-1), athleteIds: [a] });
     await attendanceService.putAttendance(s1.id, { attendances: [{ athleteId: a, status: "present" }] });
     await attendanceService.putAttendance(s2.id, { attendances: [{ athleteId: a, status: "absent" }] });
 

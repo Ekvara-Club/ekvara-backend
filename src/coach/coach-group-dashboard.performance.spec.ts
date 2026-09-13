@@ -6,6 +6,7 @@ import { CoachDashboardRepository } from "./coach-dashboard.repository";
 import { CoachDashboardService } from "./coach-dashboard.service";
 import { MetricsRepository } from "../metrics/metrics.repository";
 import { CoachTrainingsRepository } from "./coach-trainings.repository";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 import { CoachTrainingAttendanceService } from "./coach-training-attendance.service";
 import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.repository";
 import { CoachCompetitionPreparationsRepository } from "./coach-competition-preparations.repository";
@@ -75,7 +76,7 @@ describe("CoachGroupDashboardService — performance (intégration Postgres)", (
       new CoachGroupsRepository(proxiedPrisma),
       dashboardService,
       attendanceService,
-      new CoachTrainingsRepository(proxiedPrisma),
+      new CoachTrainingsRepository(proxiedPrisma, new NotificationsRepository(proxiedPrisma)),
       new CoachCompetitionPreparationsRepository(proxiedPrisma),
     );
   }

@@ -60,7 +60,7 @@ export class CoachExercisesController {
     @Param("exerciseId", ParseUUIDPipe) exerciseId: string,
     @Body() dto: ReplaceCoachExerciseAssignmentsDto,
   ) {
-    return this.exercisesService.replaceAssignments(req.user!.coachId!, exerciseId, dto);
+    return this.exercisesService.replaceAssignments(req.user!.coachId!, req.user!.sub, exerciseId, dto);
   }
 
   // Suppression physique (voir CoachExercisesRepository.delete et rapport

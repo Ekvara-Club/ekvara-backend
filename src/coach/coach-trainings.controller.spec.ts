@@ -118,7 +118,7 @@ describe("CoachTrainingsController (HTTP)", () => {
         .expect(201);
 
       expect(res.body.id).toBe(TRAINING_ID);
-      expect(service.createTraining).toHaveBeenCalledWith(COACH_ID, expect.objectContaining({ title: "Combat" }));
+      expect(service.createTraining).toHaveBeenCalledWith(COACH_ID, "u-coach", expect.objectContaining({ title: "Combat" }));
     });
   });
 
@@ -202,7 +202,7 @@ describe("CoachTrainingsController (HTTP)", () => {
         .set("Cookie", coachCookie)
         .send({ title: "Nouveau titre" })
         .expect(200);
-      expect(service.updateContent).toHaveBeenCalledWith(TRAINING_ID, { title: "Nouveau titre" });
+      expect(service.updateContent).toHaveBeenCalledWith(TRAINING_ID, "u-coach", { title: "Nouveau titre" });
     });
   });
 
@@ -227,7 +227,7 @@ describe("CoachTrainingsController (HTTP)", () => {
         .send({ groupIds: [], athleteIds: [ATHLETE_ID] })
         .expect(200);
 
-      expect(service.replaceAssignments).toHaveBeenCalledWith(COACH_ID, TRAINING_ID, { groupIds: [], athleteIds: [ATHLETE_ID] });
+      expect(service.replaceAssignments).toHaveBeenCalledWith(COACH_ID, "u-coach", TRAINING_ID, { groupIds: [], athleteIds: [ATHLETE_ID] });
     });
   });
 

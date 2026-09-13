@@ -215,7 +215,7 @@ describe("CoachExercisesController (HTTP)", () => {
         .send({ groupIds: [], athleteIds: [ATHLETE_ID] })
         .expect(200);
 
-      expect(service.replaceAssignments).toHaveBeenCalledWith(COACH_ID, EXERCISE_ID, {
+      expect(service.replaceAssignments).toHaveBeenCalledWith(COACH_ID, "u-coach", EXERCISE_ID, {
         groupIds: [],
         athleteIds: [ATHLETE_ID],
       });

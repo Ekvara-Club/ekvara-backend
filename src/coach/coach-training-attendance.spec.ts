@@ -4,6 +4,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { CoachTrainingsService } from "./coach-trainings.service";
 import { CoachTrainingsRepository } from "./coach-trainings.repository";
 import { CoachDestinataireResolver } from "./coach-destinataire-resolver";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 import { CoachTrainingAttendanceService } from "./coach-training-attendance.service";
 import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.repository";
 
@@ -25,7 +26,10 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
 
   beforeAll(() => {
     prisma = new PrismaService();
-    trainingsService = new CoachTrainingsService(new CoachTrainingsRepository(prisma), new CoachDestinataireResolver(prisma));
+    trainingsService = new CoachTrainingsService(
+      new CoachTrainingsRepository(prisma, new NotificationsRepository(prisma)),
+      new CoachDestinataireResolver(prisma),
+    );
     attendanceService = new CoachTrainingAttendanceService(new CoachTrainingAttendanceRepository(prisma));
   }, 30000);
 
@@ -40,14 +44,14 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
     await prisma.$disconnect();
   }, 30000);
 
-  async function makeCoach(): Promise<string> {
+  async function makeCoach(): Promise<{ coachId: string; userId: string }> {
     counter += 1;
     const user = await prisma.app_user.create({
       data: { email: `test-attendance-coach-${runId}-${counter}@test.fr`, nom: "Coach", prenom: `C${counter}` },
     });
     createdUserIds.push(user.id);
     const profile = await prisma.coach_profile.create({ data: { user_id: user.id } });
-    return profile.id;
+    return { coachId: profile.id, userId: user.id };
   }
 
   async function makeAthlete(prenom: string): Promise<string> {
@@ -74,7 +78,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }
 
   it("PUT batch initial, GET reflète, PUT à nouveau -> update pas duplicate", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("A");
     const b = await makeAthlete("B");
     const c = await makeAthlete("C");
@@ -82,7 +86,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
     await linkAthlete(coachId, b);
     await linkAthlete(coachId, c);
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance batch ${runId}`,
       startAt: daysFromNow(-1),
       athleteIds: [a, b, c],
@@ -117,13 +121,13 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("athlète non assigné à CETTE séance (même dans le roster) -> 400, aucune ligne créée", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("A");
     const outsider = await makeAthlete("Outsider");
     await linkAthlete(coachId, a);
     await linkAthlete(coachId, outsider); // dans le roster général du coach...
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance restreinte ${runId}`,
       startAt: daysFromNow(-1),
       athleteIds: [a], // ...mais PAS assigné à cette séance précise
@@ -145,7 +149,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("dédoublonnage multi-groupe : athlète accessible via 2 groupes + individuel -> une seule ligne de présence", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("MultiGroup");
     await linkAthlete(coachId, a);
     const g1 = await makeGroup(coachId, "G1");
@@ -153,7 +157,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
     await prisma.coach_group_athlete.create({ data: { group_id: g1, athlete_id: a } });
     await prisma.coach_group_athlete.create({ data: { group_id: g2, athlete_id: a } });
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance multi-groupe ${runId}`,
       startAt: daysFromNow(-1),
       groupIds: [g1, g2],
@@ -167,7 +171,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("snapshot : dérive de composition de groupe après publication ne change pas le roster de présence", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("SnapA");
     const b = await makeAthlete("SnapB");
     const cJoinsLater = await makeAthlete("SnapC");
@@ -178,7 +182,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
     await prisma.coach_group_athlete.create({ data: { group_id: group, athlete_id: a } });
     await prisma.coach_group_athlete.create({ data: { group_id: group, athlete_id: b } });
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance snapshot ${runId}`,
       startAt: daysFromNow(-1),
       groupIds: [group],
@@ -196,18 +200,18 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("séance annulée : exclue du résumé, PUT présence refusé (409)", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("Cancelled");
     await linkAthlete(coachId, a);
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance annulée ${runId}`,
       startAt: daysFromNow(-1),
       athleteIds: [a],
     });
     await attendanceService.putAttendance(training.id, { attendances: [{ athleteId: a, status: "present" }] });
 
-    await trainingsService.cancel(training.id);
+    await trainingsService.cancel(training.id, actorUserId);
 
     await expect(
       attendanceService.putAttendance(training.id, { attendances: [{ athleteId: a, status: "absent" }] }),
@@ -219,11 +223,11 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("séance future : PUT présence refusé (409), GET reste accessible", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("Future");
     await linkAthlete(coachId, a);
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance future ${runId}`,
       startAt: daysFromNow(10),
       athleteIds: [a],
@@ -238,11 +242,11 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("retrait du roster (unlink coach_athlete) : l'historique de présence n'est pas cascade-supprimé", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("Unlinked");
     await linkAthlete(coachId, a);
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance avant retrait roster ${runId}`,
       startAt: daysFromNow(-1),
       athleteIds: [a],
@@ -259,13 +263,13 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("non renseigné != absent : résumé distingue eligibleSessions et recordedSessions", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("Summary");
     await linkAthlete(coachId, a);
 
-    const t1 = await trainingsService.createTraining(coachId, { title: `S1 ${runId}`, startAt: daysFromNow(-5), athleteIds: [a] });
-    const t2 = await trainingsService.createTraining(coachId, { title: `S2 ${runId}`, startAt: daysFromNow(-3), athleteIds: [a] });
-    await trainingsService.createTraining(coachId, { title: `S3 non renseignée ${runId}`, startAt: daysFromNow(-1), athleteIds: [a] });
+    const t1 = await trainingsService.createTraining(coachId, actorUserId, { title: `S1 ${runId}`, startAt: daysFromNow(-5), athleteIds: [a] });
+    const t2 = await trainingsService.createTraining(coachId, actorUserId, { title: `S2 ${runId}`, startAt: daysFromNow(-3), athleteIds: [a] });
+    await trainingsService.createTraining(coachId, actorUserId, { title: `S3 non renseignée ${runId}`, startAt: daysFromNow(-1), athleteIds: [a] });
 
     await attendanceService.putAttendance(t1.id, { attendances: [{ athleteId: a, status: "present" }] });
     await attendanceService.putAttendance(t2.id, { attendances: [{ athleteId: a, status: "absent" }] });
@@ -282,7 +286,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("retrait d'assignation avec présence déjà enregistrée -> 409, rien n'est modifié (whole-request-reject, même mélangé à un ajout/retrait valides)", async () => {
-    const coachId = await makeCoach();
+    const { coachId, userId: actorUserId } = await makeCoach();
     const a = await makeAthlete("Protected");
     const b = await makeAthlete("Removable");
     const c = await makeAthlete("ToAdd");
@@ -290,7 +294,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
     await linkAthlete(coachId, b);
     await linkAthlete(coachId, c);
 
-    const training = await trainingsService.createTraining(coachId, {
+    const training = await trainingsService.createTraining(coachId, actorUserId, {
       title: `Séance protégée ${runId}`,
       startAt: daysFromNow(-1),
       athleteIds: [a, b],
@@ -301,7 +305,7 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
     // enregistrée) ET B (non protégé), ajoute C. Le retrait de A doit
     // rejeter TOUTE la requête, y compris le retrait de B et l'ajout de C.
     await expect(
-      trainingsService.replaceAssignments(coachId, training.id, { groupIds: [], athleteIds: [c] }),
+      trainingsService.replaceAssignments(coachId, actorUserId, training.id, { groupIds: [], athleteIds: [c] }),
     ).rejects.toBeInstanceOf(ConflictException);
 
     const detail = await trainingsService.findOneForCoach(training.id);
@@ -312,18 +316,18 @@ describe("Présences Coach V1 — intégration Postgres réelle", () => {
   }, 30000);
 
   it("isolation multi-coach : le résumé assiduité d'un coach n'inclut jamais les séances d'un autre coach sur le même athlète partagé", async () => {
-    const coachA = await makeCoach();
-    const coachB = await makeCoach();
+    const { coachId: coachA, userId: actorUserIdA } = await makeCoach();
+    const { coachId: coachB, userId: actorUserIdB } = await makeCoach();
     const shared = await makeAthlete("Shared");
     await linkAthlete(coachA, shared);
     await linkAthlete(coachB, shared);
 
-    const trainingA = await trainingsService.createTraining(coachA, {
+    const trainingA = await trainingsService.createTraining(coachA, actorUserIdA, {
       title: `Séance coach A ${runId}`,
       startAt: daysFromNow(-1),
       athleteIds: [shared],
     });
-    const trainingB = await trainingsService.createTraining(coachB, {
+    const trainingB = await trainingsService.createTraining(coachB, actorUserIdB, {
       title: `Séance coach B ${runId}`,
       startAt: daysFromNow(-2),
       athleteIds: [shared],

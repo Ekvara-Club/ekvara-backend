@@ -3,6 +3,9 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CANCELLED_TRAINING_STATUS } from "../trainings/trainings.repository";
+import { NotificationsRepository } from "../notifications/notifications.repository";
+import { formatTrainingDateTime, NotificationInsertRow } from "../notifications/notifications.util";
+import { TRAINING_ASSIGNED, TRAINING_CANCELLED, TRAINING_UPDATED, TRAINING_RESOURCE } from "../notifications/notification.constants";
 
 const SAFE_USER_SELECT = { id: true, email: true, nom: true, prenom: true } as const;
 
@@ -59,9 +62,20 @@ const SESSION_DETAIL_SELECT = {
 export type CoachTrainingSummary = Prisma.coach_training_sessionGetPayload<{ select: typeof SESSION_LIST_SELECT }>;
 export type CoachTrainingDetail = Prisma.coach_training_sessionGetPayload<{ select: typeof SESSION_DETAIL_SELECT }>;
 
+// Contenu déjà décidé côté service (CoachTrainingsService), jamais recalculé
+// ici : notify === null signifie "pas de changement significatif détecté"
+// (ticket "IDEMPOTENCE") — aucune notification n'est insérée dans ce cas.
+export interface TrainingUpdateNotify {
+  actorUserId: string;
+  snapshot: TrainingFieldsSnapshot;
+}
+
 @Injectable()
 export class CoachTrainingsRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsRepository,
+  ) {}
 
   // La résolution/autorisation des destinataires (groupes + athlètes) vit
   // désormais dans CoachDestinataireResolver (partagée avec la publication
@@ -139,11 +153,18 @@ export class CoachTrainingsRepository {
   // V1" §6/§19) : groupId = le groupe ayant réellement produit cet athlète
   // à la résolution (premier trouvé si plusieurs, arbitraire — c'est un
   // libellé, pas une autorisation), null si assignation individuelle.
+  //
+  // Ticket "Notifications in-app Coach + Athlete V1" : une notification
+  // TRAINING_ASSIGNED par athlète nouvellement assigné, insérée DANS cette
+  // même transaction (mutation + notification réussissent ou rien, voir
+  // ticket "TRANSACTIONS") — jamais une boucle par athlète (createMany, même
+  // politique que le reste de cette méthode, voir ticket "BATCH INSERT").
   async createSessionWithAssignments(
     coachId: string,
     fields: TrainingFieldsSnapshot,
     athletes: { athleteId: string; groupId: string | null }[],
     groupIds: string[],
+    actorUserId: string,
   ): Promise<string> {
     return this.prisma.$transaction(async (tx) => {
       const session = await tx.coach_training_session.create({
@@ -167,6 +188,8 @@ export class CoachTrainingsRepository {
             group_id: athletes[i].groupId,
           })),
         });
+
+        await this.notifyAssigned(tx, actorUserId, fields, trainingSessionRows);
       }
 
       if (groupIds.length > 0) {
@@ -183,13 +206,23 @@ export class CoachTrainingsRepository {
   // par tous les athlètes déjà assignés. updateMany sur training_session
   // reste O(1) requête quel que soit le nombre d'assignés (jamais une boucle
   // par athlète — voir rapport §24).
-  async updateContentAndPropagate(trainingSessionId: string, fields: Partial<TrainingFieldsSnapshot>): Promise<void> {
+  //
+  // notify (ticket "Notifications in-app...") : déjà décidé côté service
+  // (comparaison avant/après des champs réellement modifiés, voir
+  // CoachTrainingsService.updateContent) — null si aucun changement
+  // significatif, pour ne jamais notifier un PATCH sans effet réel (ticket
+  // "IDEMPOTENCE").
+  async updateContentAndPropagate(
+    trainingSessionId: string,
+    fields: Partial<TrainingFieldsSnapshot>,
+    notify: TrainingUpdateNotify | null,
+  ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       await tx.coach_training_session.update({ where: { id: trainingSessionId }, data: fields });
 
       const assignments = await tx.coach_training_assignment.findMany({
         where: { coach_training_session_id: trainingSessionId },
-        select: { training_session_id: true },
+        select: { training_session_id: true, athlete_id: true },
       });
 
       if (assignments.length > 0) {
@@ -197,6 +230,21 @@ export class CoachTrainingsRepository {
           where: { id: { in: assignments.map((a) => a.training_session_id) } },
           data: fields,
         });
+      }
+
+      if (notify && assignments.length > 0) {
+        const userIdByAthleteId = await this.resolveUserIds(
+          tx,
+          assignments.map((a) => a.athlete_id),
+        );
+        const location = notify.snapshot.lieu ? `, ${notify.snapshot.lieu}` : "";
+        const rows = this.buildRows(assignments, userIdByAthleteId, {
+          actorUserId: notify.actorUserId,
+          type: TRAINING_UPDATED,
+          title: "Entraînement modifié",
+          message: `Ton coach a modifié la séance "${notify.snapshot.titre}" — nouvelle heure : ${formatTrainingDateTime(notify.snapshot.date_debut)}${location}.`,
+        });
+        await this.notifications.createMany(tx, rows);
       }
     });
   }
@@ -208,8 +256,17 @@ export class CoachTrainingsRepository {
   // training_session déjà assignés ; INACTIVE_TRAINING_STATUSES (même
   // source) exclut déjà cette valeur côté lecture (findNextForAthlete,
   // dashboard nextTraining) sans filtrage supplémentaire à écrire.
-  async cancel(trainingSessionId: string): Promise<void> {
+  //
+  // Idempotence (ticket "Notifications in-app...") : si la séance est DÉJÀ
+  // annulée (rejeu du DELETE), aucune nouvelle notification n'est insérée —
+  // comparé à statut AVANT écriture, dans la même transaction.
+  async cancel(trainingSessionId: string, actorUserId: string): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      const before = await tx.coach_training_session.findUnique({
+        where: { id: trainingSessionId },
+        select: { titre: true, date_debut: true, lieu: true, statut: true },
+      });
+
       await tx.coach_training_session.update({
         where: { id: trainingSessionId },
         data: { statut: CANCELLED_TRAINING_STATUS },
@@ -217,13 +274,28 @@ export class CoachTrainingsRepository {
 
       const assignments = await tx.coach_training_assignment.findMany({
         where: { coach_training_session_id: trainingSessionId },
-        select: { training_session_id: true },
+        select: { training_session_id: true, athlete_id: true },
       });
       if (assignments.length > 0) {
         await tx.training_session.updateMany({
           where: { id: { in: assignments.map((a) => a.training_session_id) } },
           data: { statut: CANCELLED_TRAINING_STATUS },
         });
+      }
+
+      if (before && before.statut !== CANCELLED_TRAINING_STATUS && assignments.length > 0) {
+        const userIdByAthleteId = await this.resolveUserIds(
+          tx,
+          assignments.map((a) => a.athlete_id),
+        );
+        const location = before.lieu ? `, ${before.lieu}` : "";
+        const rows = this.buildRows(assignments, userIdByAthleteId, {
+          actorUserId,
+          type: TRAINING_CANCELLED,
+          title: "Entraînement annulé",
+          message: `Ton coach a annulé la séance "${before.titre}" prévue le ${formatTrainingDateTime(before.date_debut)}${location}.`,
+        });
+        await this.notifications.createMany(tx, rows);
       }
     });
   }
@@ -260,12 +332,20 @@ export class CoachTrainingsRepository {
   // group_sources. `fields` sert à générer les training_session des NOUVEAUX
   // athlètes avec le contenu ACTUEL de la séance (jamais périmé). toAdd
   // porte le même libellé de groupe snapshotté que createSessionWithAssignments.
+  //
+  // Ticket "Notifications in-app..." : seuls les NOUVEAUX athlètes (toAdd)
+  // reçoivent TRAINING_ASSIGNED — un athlète déjà assigné avant cet appel
+  // n'est jamais notifié juste parce que la liste de destinataires a changé
+  // (voir ticket "CREATION TRAINING"/"MODIFICATION ASSIGNMENTS"). Un athlète
+  // retiré (toRemove) ne reçoit rien : TRAINING_REMOVED n'existe pas en V1
+  // (voir rapport final, décision explicite).
   async replaceAssignments(
     coachTrainingSessionId: string,
     fields: TrainingFieldsSnapshot,
     toAdd: { athleteId: string; groupId: string | null }[],
     toRemoveTrainingSessionIds: string[],
     newGroupIds: string[],
+    actorUserId: string,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       if (toRemoveTrainingSessionIds.length > 0) {
@@ -288,6 +368,8 @@ export class CoachTrainingsRepository {
             group_id: toAdd[i].groupId,
           })),
         });
+
+        await this.notifyAssigned(tx, actorUserId, fields, newRows);
       }
 
       await tx.coach_training_group_source.deleteMany({ where: { coach_training_session_id: coachTrainingSessionId } });
@@ -296,6 +378,72 @@ export class CoachTrainingsRepository {
           data: newGroupIds.map((groupId) => ({ coach_training_session_id: coachTrainingSessionId, group_id: groupId })),
         });
       }
+    });
+  }
+
+  // Factorisation TRAINING_ASSIGNED (ticket §22 "ne duplique jamais une
+  // règle métier") : utilisée à la fois par createSessionWithAssignments et
+  // replaceAssignments (toAdd), même message, même resource_id (le
+  // training_session PROPRE à cet athlète, jamais coach_training_session_id
+  // — voir modèle notification, resource_id sert au deep-link, l'athlète n'a
+  // qu'une route parent /activite aujourd'hui mais l'id reste correct pour
+  // un futur deep-link réel).
+  private async notifyAssigned(
+    tx: Prisma.TransactionClient,
+    actorUserId: string,
+    fields: TrainingFieldsSnapshot,
+    rows: { id: string; athlete_id: string }[],
+  ): Promise<void> {
+    const userIdByAthleteId = await this.resolveUserIds(
+      tx,
+      rows.map((r) => r.athlete_id),
+    );
+    const location = fields.lieu ? `, ${fields.lieu}` : "";
+    const notificationRows = this.buildRows(
+      rows.map((r) => ({ training_session_id: r.id, athlete_id: r.athlete_id })),
+      userIdByAthleteId,
+      {
+        actorUserId,
+        type: TRAINING_ASSIGNED,
+        title: "Nouvel entraînement",
+        message: `Ton coach t'a ajouté à une séance le ${formatTrainingDateTime(fields.date_debut)}${location}.`,
+      },
+    );
+    await this.notifications.createMany(tx, notificationRows);
+  }
+
+  private async resolveUserIds(tx: Prisma.TransactionClient, athleteIds: string[]): Promise<Map<string, string>> {
+    const rows = await this.notifications.resolveAthleteUserIds(tx, athleteIds);
+    return new Map(rows.map((r) => [r.id, r.user_id]));
+  }
+
+  // resource_id = training_session_id PROPRE à chaque athlète (jamais un id
+  // partagé) — un athlète sans app_user résolu est structurellement
+  // impossible (voir NotificationsRepository.resolveAthleteUserIds) mais
+  // filtré défensivement plutôt que de faire planter toute la publication
+  // (ticket "CREATION TRAINING" : "ne pas crash toute la publication").
+  private buildRows(
+    assignments: { training_session_id: string; athlete_id: string }[],
+    userIdByAthleteId: Map<string, string>,
+    content: { actorUserId: string; type: string; title: string; message: string },
+  ): NotificationInsertRow[] {
+    return assignments.flatMap((a) => {
+      const recipientUserId = userIdByAthleteId.get(a.athlete_id);
+      if (!recipientUserId) {
+        return [];
+      }
+      return [
+        {
+          recipient_user_id: recipientUserId,
+          actor_user_id: content.actorUserId,
+          context: "ATHLETE",
+          type: content.type,
+          title: content.title,
+          message: content.message,
+          resource_type: TRAINING_RESOURCE,
+          resource_id: a.training_session_id,
+        },
+      ];
     });
   }
 }

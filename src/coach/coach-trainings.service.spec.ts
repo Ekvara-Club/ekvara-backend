@@ -23,6 +23,7 @@ describe("CoachTrainingsService", () => {
   const GROUP_ID = "group-1";
   const ATHLETE_A = "athlete-a";
   const ATHLETE_B = "athlete-b";
+  const ACTOR_USER_ID = "coach-user-1";
 
   function detail(overrides: Record<string, unknown> = {}) {
     return {
@@ -78,7 +79,7 @@ describe("CoachTrainingsService", () => {
       );
 
       await expect(
-        service.createTraining(COACH_ID, {
+        service.createTraining(COACH_ID, ACTOR_USER_ID, {
           title: "Combat",
           startAt: "2026-09-05T18:00:00.000Z",
           groupIds: [GROUP_ID],
@@ -93,7 +94,7 @@ describe("CoachTrainingsService", () => {
       );
 
       await expect(
-        service.createTraining(COACH_ID, { title: "Combat", startAt: "2026-09-05T18:00:00.000Z" }),
+        service.createTraining(COACH_ID, ACTOR_USER_ID, { title: "Combat", startAt: "2026-09-05T18:00:00.000Z" }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(repository.createSessionWithAssignments).not.toHaveBeenCalled();
     });
@@ -107,7 +108,7 @@ describe("CoachTrainingsService", () => {
       repository.createSessionWithAssignments.mockResolvedValue(SESSION_ID);
       repository.findSessionDetail.mockResolvedValue(detail());
 
-      await service.createTraining(COACH_ID, {
+      await service.createTraining(COACH_ID, ACTOR_USER_ID, {
         title: "Combat",
         startAt: "2026-09-05T18:00:00.000Z",
         groupIds: [GROUP_ID],
@@ -122,7 +123,7 @@ describe("CoachTrainingsService", () => {
 
     it("endAt <= startAt -> BadRequestException, avant même d'appeler le resolver", async () => {
       await expect(
-        service.createTraining(COACH_ID, {
+        service.createTraining(COACH_ID, ACTOR_USER_ID, {
           title: "Combat",
           startAt: "2026-09-05T18:00:00.000Z",
           endAt: "2026-09-05T17:00:00.000Z",
@@ -161,13 +162,13 @@ describe("CoachTrainingsService", () => {
 
   describe("updateContent", () => {
     it("aucun champ fourni -> BadRequestException", async () => {
-      await expect(service.updateContent(SESSION_ID, {})).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.updateContent(SESSION_ID, ACTOR_USER_ID, {})).rejects.toBeInstanceOf(BadRequestException);
       expect(repository.updateContentAndPropagate).not.toHaveBeenCalled();
     });
 
     it("séance introuvable -> NotFoundException", async () => {
       repository.findSessionDetail.mockResolvedValue(null);
-      await expect(service.updateContent(SESSION_ID, { title: "Nouveau" })).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.updateContent(SESSION_ID, ACTOR_USER_ID, { title: "Nouveau" })).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it("modifier endAt seul sans casser la cohérence avec le startAt EXISTANT -> validé contre la valeur actuelle", async () => {
@@ -176,7 +177,7 @@ describe("CoachTrainingsService", () => {
       );
 
       await expect(
-        service.updateContent(SESSION_ID, { endAt: "2026-09-05T17:00:00.000Z" }),
+        service.updateContent(SESSION_ID, ACTOR_USER_ID, { endAt: "2026-09-05T17:00:00.000Z" }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(repository.updateContentAndPropagate).not.toHaveBeenCalled();
     });
@@ -186,11 +187,12 @@ describe("CoachTrainingsService", () => {
         .mockResolvedValueOnce(detail())
         .mockResolvedValueOnce(detail({ date_debut: new Date("2026-09-05T20:30:00.000Z") }));
 
-      await service.updateContent(SESSION_ID, { startAt: "2026-09-05T20:30:00.000Z" });
+      await service.updateContent(SESSION_ID, ACTOR_USER_ID, { startAt: "2026-09-05T20:30:00.000Z" });
 
       expect(repository.updateContentAndPropagate).toHaveBeenCalledWith(
         SESSION_ID,
         expect.objectContaining({ date_debut: new Date("2026-09-05T20:30:00.000Z") }),
+        expect.objectContaining({ actorUserId: ACTOR_USER_ID }),
       );
       // Seul date_debut était fourni : pas de titre/lieu/etc. dans le patch.
       const [, patch] = repository.updateContentAndPropagate.mock.calls[0];
@@ -207,7 +209,7 @@ describe("CoachTrainingsService", () => {
         { athlete_id: ATHLETE_B, training_session_id: "ts-b" },
       ]);
 
-      await service.replaceAssignments(COACH_ID, SESSION_ID, { groupIds: [], athleteIds: ["athlete-c"] });
+      await service.replaceAssignments(COACH_ID, ACTOR_USER_ID, SESSION_ID, { groupIds: [], athleteIds: ["athlete-c"] });
 
       const [, , toAdd, toRemoveTrainingSessionIds] = repository.replaceAssignments.mock.calls[0];
       expect(toAdd).toEqual([{ athleteId: "athlete-c", groupId: null }]);
@@ -219,7 +221,7 @@ describe("CoachTrainingsService", () => {
       destinataireResolver.resolve.mockResolvedValue({ athleteIds: [ATHLETE_A], groupIds: [], groupMembers: [] });
       repository.findCurrentAssignments.mockResolvedValue([{ athlete_id: ATHLETE_A, training_session_id: "ts-a" }]);
 
-      await service.replaceAssignments(COACH_ID, SESSION_ID, { groupIds: [], athleteIds: [ATHLETE_A] });
+      await service.replaceAssignments(COACH_ID, ACTOR_USER_ID, SESSION_ID, { groupIds: [], athleteIds: [ATHLETE_A] });
 
       const [, , toAdd, toRemove] = repository.replaceAssignments.mock.calls[0];
       expect(toAdd).toEqual([]);
@@ -233,7 +235,7 @@ describe("CoachTrainingsService", () => {
       );
 
       await expect(
-        service.replaceAssignments(COACH_ID, SESSION_ID, { groupIds: [], athleteIds: [ATHLETE_A] }),
+        service.replaceAssignments(COACH_ID, ACTOR_USER_ID, SESSION_ID, { groupIds: [], athleteIds: [ATHLETE_A] }),
       ).rejects.toBeInstanceOf(ForbiddenException);
       expect(repository.replaceAssignments).not.toHaveBeenCalled();
     });
@@ -243,9 +245,9 @@ describe("CoachTrainingsService", () => {
     it("délègue à repository.cancel puis renvoie la fiche à jour", async () => {
       repository.findSessionDetail.mockResolvedValue(detail({ statut: "annule" }));
 
-      const result = await service.cancel(SESSION_ID);
+      const result = await service.cancel(SESSION_ID, ACTOR_USER_ID);
 
-      expect(repository.cancel).toHaveBeenCalledWith(SESSION_ID);
+      expect(repository.cancel).toHaveBeenCalledWith(SESSION_ID, ACTOR_USER_ID);
       expect(result.status).toBe("annule");
     });
   });
