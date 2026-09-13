@@ -287,7 +287,11 @@ describe("CoachDashboardService", () => {
 
     it("weightCategory vient de la participation (categorie_poids), jamais d'un champ athlete inexistant", async () => {
       coachRepository.findAthletesForCoach.mockResolvedValue([athleteLink("a-1", "Kais", "Ali")]);
-      const startDate = new Date("2026-09-05T00:00:00.000Z");
+      // Relative à l'exécution du test (jamais une date ISO figée) : ce test
+      // asserte daysUntil > 0, donc dépend de `new Date()` au moment du run
+      // (voir CoachDashboardService) — une date passée en dur finit TOUJOURS
+      // par tomber dans le passé (voir rapport Ticket #10B).
+      const startDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
       dashboardRepository.findUpcomingParticipationsForAthletes.mockResolvedValue([
         {
           athlete_id: "a-1",

@@ -62,6 +62,16 @@ describe("Non-régression : planning athlète après création coach (intégrati
     return athlete.id;
   }
 
+  // Dates fixture relatives à l'exécution du test (jamais une date ISO
+  // figée) : ce fichier exerce findNextForAthlete, dont le filtre
+  // "prochain" dépend de `new Date()` au moment de l'appel (voir
+  // TrainingsService.findNextForAthlete) — une date passée en dur finit
+  // TOUJOURS par tomber dans le passé (voir rapport Ticket #10B). Même
+  // convention que coach-training-attendance.spec.ts/coach-group-dashboard.spec.ts.
+  function daysFromNow(n: number): string {
+    return new Date(Date.now() + n * 24 * 60 * 60 * 1000).toISOString();
+  }
+
   it("coach crée une séance pour A/B/C -> présente dans le planning RÉEL de A, B, C — absente pour D non assigné", async () => {
     const { coachId, userId: actorUserId } = await makeCoach();
     const athleteA = await makeAthlete("A");
@@ -75,7 +85,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
 
     await coachTrainingsService.createTraining(coachId, actorUserId, {
       title: `Combat collectif ${runId}`,
-      startAt: "2026-09-05T20:00:00.000Z",
+      startAt: daysFromNow(30),
       athleteIds: [athleteA, athleteB, athleteC],
     });
 
@@ -100,14 +110,15 @@ describe("Non-régression : planning athlète après création coach (intégrati
 
     const created = await coachTrainingsService.createTraining(coachId, actorUserId, {
       title: `Séance horaire ${runId}`,
-      startAt: "2026-09-05T20:00:00.000Z",
+      startAt: daysFromNow(30),
       athleteIds: [athleteA],
     });
 
-    await coachTrainingsService.updateContent(created.id, actorUserId, { startAt: "2026-09-05T20:30:00.000Z" });
+    const newStart = daysFromNow(31);
+    await coachTrainingsService.updateContent(created.id, actorUserId, { startAt: newStart });
 
     const next = await trainingsService.findNextForAthlete(athleteA);
-    expect(next?.startAt.toISOString()).toBe("2026-09-05T20:30:00.000Z");
+    expect(next?.startAt.toISOString()).toBe(newStart);
   });
 
   it("une séance annulée côté coach disparaît de findNextForAthlete (réutilise INACTIVE_TRAINING_STATUSES existant, aucun filtre spécial)", async () => {
@@ -117,7 +128,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
 
     const created = await coachTrainingsService.createTraining(coachId, actorUserId, {
       title: `Séance annulable ${runId}`,
-      startAt: "2026-09-05T20:00:00.000Z",
+      startAt: daysFromNow(30),
       athleteIds: [athleteA],
     });
 
@@ -136,7 +147,7 @@ describe("Non-régression : planning athlète après création coach (intégrati
 
     const own = await trainingsService.createTraining(athleteA, {
       title: `Séance perso ${runId}`,
-      startAt: "2026-09-06T08:00:00.000Z",
+      startAt: daysFromNow(30),
     });
 
     expect(own.title).toBe(`Séance perso ${runId}`);
