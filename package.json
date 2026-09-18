@@ -9,7 +9,8 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/src/main",
     "test": "jest",
-    "seed:exercises": "nest build && node dist/src/exercises/seed/seed-exercises.js"
+    "seed:exercises": "nest build && node dist/src/exercises/seed/seed-exercises.js",
+    "import:wt-results": "nest build && node dist/src/international/wt-results/wtr-import.cli.js"
   },
   "keywords": [],
   "author": "",

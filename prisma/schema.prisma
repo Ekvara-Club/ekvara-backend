@@ -99,6 +99,7 @@ model competition {
   weight_target                 weight_target[]
   sources                       competition_source[]
   entries                       competition_entry[]
+  matches                       competition_match[]
   coach_competition_preparation coach_competition_preparation[]
 }
 
@@ -175,6 +176,115 @@ model competition_entry {
   @@unique([competition_id, source, participant_name, source_category_raw_label])
   @@index([competition_id])
   @@index([competition_id, weight_category])
+}
+
+// Athlète PUBLIC/international, tel que connu d'une source externe (pour
+// l'instant World Taekwondo Results — ticket "WT Results Data Foundation V1").
+// Volontairement SANS aucun lien vers `athlete` (compte EKVARA, 1:1 avec
+// app_user) : un athlète présent dans une source publique n'est jamais
+// automatiquement un utilisateur EKVARA, et aucun rapprochement par nom/pays/
+// club n'est fait ici. L'identité vient exclusivement de
+// external_athlete_source (une ligne par source, clé unique
+// [source, source_external_id]) pour pouvoir rattacher plus tard d'autres
+// sources (rankings GMS...) sans reconstruire l'identité.
+//
+// gender / birth_date : nullables, restent NULL tant qu'une source ne les
+// expose pas réellement (WT Results ne les expose pas — jamais inférés depuis
+// une catégorie de poids).
+model external_athlete {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  display_name String    @db.VarChar(255)
+  // Code NOC 3 lettres tel que fourni par la source (FRA, KOR, AIN...), jamais
+  // converti vers les libellés texte de competition_entry.country.
+  country_code String?   @db.VarChar(10)
+  gender       String?   @db.VarChar(20)
+  birth_date   DateTime? @db.Date
+  created_at   DateTime? @default(now()) @db.Timestamp(6)
+  updated_at   DateTime? @default(now()) @db.Timestamp(6)
+
+  sources      external_athlete_source[]
+  matches_as_a competition_match[]       @relation("match_athlete_a")
+  matches_as_b competition_match[]       @relation("match_athlete_b")
+  matches_won  competition_match[]       @relation("match_winner")
+}
+
+// Provenance + identité d'un external_athlete pour UNE source. Pour WT
+// Results : source = "world_taekwondo_results", source_external_id = UUID du
+// profil WT Results. record_* = record V/D AFFICHÉ par la source à
+// record_synced_at (snapshot avec provenance, jamais recalculé : notre jeu de
+// matchs est partiel, un record dérivé serait faux).
+model external_athlete_source {
+  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  external_athlete_id String           @db.Uuid
+  external_athlete    external_athlete @relation(fields: [external_athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  source             String  @db.VarChar(50)
+  source_external_id String  @db.VarChar(255)
+  source_url         String? @db.VarChar(500)
+
+  raw_name  String? @db.VarChar(255)
+  // URL publique de la photo chez la source : jamais téléchargée/réhébergée.
+  image_url String? @db.VarChar(500)
+
+  record_wins      Int?
+  record_losses    Int?
+  record_synced_at DateTime? @db.Timestamp(6)
+
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @default(now()) @db.Timestamp(6)
+
+  @@unique([source, source_external_id])
+  @@index([external_athlete_id])
+}
+
+// Combat entre deux external_athlete lors d'une compétition CANONIQUE EKVARA
+// (jamais un id de source, comme competition_entry/competition_source).
+// Identité logique = [source, source_external_id] (id du match chez la
+// source), jamais noms + date.
+//
+// Orientation : athlete_a / athlete_b et score_a / score_b suivent l'ordre
+// EXPLICITE de la page match de la source (jamais déduit d'un résumé profil).
+// score_* = score FINAL du match (rounds gagnés, ex. 2-1), pas les points par
+// round. winner_athlete_id vient du marqueur de vainqueur exposé par la source,
+// jamais de score_a > score_b (RSC/DSQ/WDR...). bracket_stage = tour du
+// tableau (F, SF, QF, R16...) — à ne pas confondre avec les rounds R1/R2/R3
+// d'un combat, non modélisés en V1. Contraintes CHECK (a <> b, winner ∈ {a,b})
+// ajoutées à la main dans la migration (non exprimables en Prisma).
+model competition_match {
+  id             String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  competition_id String      @db.Uuid
+  competition    competition @relation(fields: [competition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  source             String  @db.VarChar(50)
+  source_external_id String  @db.VarChar(255)
+  source_url         String? @db.VarChar(500)
+
+  occurred_at    DateTime? @db.Timestamp(6)
+  category_label String?   @db.VarChar(100)
+  bracket_stage  String?   @db.VarChar(50)
+  contest_number Int?
+
+  athlete_a_id String           @db.Uuid
+  athlete_b_id String           @db.Uuid
+  athlete_a    external_athlete @relation("match_athlete_a", fields: [athlete_a_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  athlete_b    external_athlete @relation("match_athlete_b", fields: [athlete_b_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  score_a Int?
+  score_b Int?
+
+  winner_athlete_id String?           @db.Uuid
+  winner            external_athlete? @relation("match_winner", fields: [winner_athlete_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  result_method     String? @db.VarChar(20)
+  result_method_raw String? @db.VarChar(100)
+
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @default(now()) @db.Timestamp(6)
+
+  @@unique([source, source_external_id])
+  @@index([competition_id])
+  @@index([athlete_a_id])
+  @@index([athlete_b_id])
 }
 
 model exercise {
