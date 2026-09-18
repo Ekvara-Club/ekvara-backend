@@ -10,6 +10,7 @@ import { CoachTrainingOwnershipGuard } from "./coach-training-ownership.guard";
 import { CoachExerciseOwnershipGuard } from "./coach-exercise-ownership.guard";
 import { CoachCompetitionOwnershipGuard } from "./coach-competition-ownership.guard";
 import { CoachPreparationOwnershipGuard } from "./coach-preparation-ownership.guard";
+import { CoachInvitationOwnershipGuard } from "./coach-invitation-ownership.guard";
 
 // Refuse de démarrer plutôt que d'utiliser un secret de repli dangereux.
 // Exécuté au chargement du module (avant que Nest ne construise quoi que ce
@@ -44,6 +45,7 @@ if (!jwtSecret) {
     CoachExerciseOwnershipGuard,
     CoachCompetitionOwnershipGuard,
     CoachPreparationOwnershipGuard,
+    CoachInvitationOwnershipGuard,
   ],
   exports: [
     JwtModule,
@@ -56,6 +58,7 @@ if (!jwtSecret) {
     CoachExerciseOwnershipGuard,
     CoachCompetitionOwnershipGuard,
     CoachPreparationOwnershipGuard,
+    CoachInvitationOwnershipGuard,
   ],
 })
 export class AuthGuardsModule {}

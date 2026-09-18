@@ -6,10 +6,26 @@ import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { AUTH_COOKIE_NAME, buildAuthCookieOptions, buildLogoutCookieOptions } from "./auth.cookie";
+import { InvitationsService } from "../invitations/invitations.service";
+import { ValidateInvitationDto } from "../invitations/dto/validate-invitation.dto";
 
 @Controller("auth")
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly invitationsService: InvitationsService,
+  ) {}
+
+  // Public, sans authentification (voir ticket §"VALIDATION PUBLIQUE DU
+  // CODE") : throttlé comme register/login pour limiter le bruteforce sur un
+  // format de code court, malgré son entropie élevée (voir
+  // invitation-code.util.ts).
+  @Post("invitations/validate")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  validateInvitation(@Body() dto: ValidateInvitationDto) {
+    return this.invitationsService.validate(dto.code);
+  }
 
   @Post("register")
   @UseGuards(ThrottlerGuard)

@@ -1,25 +1,31 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { UnauthorizedException } from "@nestjs/common";
+import { ConflictException, NotFoundException, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as argon2 from "argon2";
 import { AuthService } from "./auth.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AthletesService } from "../athletes/athletes.service";
+import { InvitationsService } from "../invitations/invitations.service";
 import { testJwtModule } from "../test-utils/auth-test.helper";
 
 describe("AuthService", () => {
   let service: AuthService;
-  let prisma: { app_user: { findUnique: jest.Mock } };
-  let athletesService: { create: jest.Mock; findOne: jest.Mock };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let prisma: any;
+  let athletesService: { createWithinTransaction: jest.Mock; findOne: jest.Mock };
+  let invitationsService: { redeem: jest.Mock };
   let jwtService: JwtService;
 
   const APP_USER_ID = "u-1111-1111-1111-111111111111";
   const ATHLETE_ID = "a-2222-2222-2222-222222222222";
   const COACH_ID = "c-3333-3333-3333-333333333333";
+  const CLUB_ID = "cl-4444-4444-4444-444444444444";
+  const INVITER_COACH_ID = "c-5555-5555-5555-555555555555";
 
   beforeEach(async () => {
     prisma = { app_user: { findUnique: jest.fn() } };
-    athletesService = { create: jest.fn(), findOne: jest.fn() };
+    athletesService = { createWithinTransaction: jest.fn(), findOne: jest.fn() };
+    invitationsService = { redeem: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule()],
@@ -27,6 +33,7 @@ describe("AuthService", () => {
         AuthService,
         { provide: PrismaService, useValue: prisma },
         { provide: AthletesService, useValue: athletesService },
+        { provide: InvitationsService, useValue: invitationsService },
       ],
     }).compile();
 
@@ -35,39 +42,129 @@ describe("AuthService", () => {
   });
 
   describe("register", () => {
-    it("hash réellement le mot de passe (argon2id) avant de le transmettre à AthletesService", async () => {
-      athletesService.create.mockResolvedValue({
+    // tx factice partagé par $transaction : vérifie que redeem() et la
+    // création coach_athlete/groupe reçoivent bien LE MÊME client que
+    // createWithinTransaction (voir ticket §"TRANSACTION REGISTER" — tout
+    // doit appartenir à une seule transaction Prisma, jamais plusieurs).
+    let tx: { coach_athlete: { create: jest.Mock }; coach_group_athlete: { create: jest.Mock } };
+
+    const REGISTER_DTO = {
+      invitationCode: "EKV-ABCD2345",
+      email: "Test@Ekvara.fr",
+      password: "motdepasse123",
+      nom: "Dupont",
+      prenom: "Jean",
+    };
+
+    beforeEach(() => {
+      tx = { coach_athlete: { create: jest.fn() }, coach_group_athlete: { create: jest.fn() } };
+      prisma.$transaction = jest.fn((callback: (tx: unknown) => unknown) => callback(tx));
+    });
+
+    it("hash réellement le mot de passe (argon2id) avant de le transmettre à AthletesService, avec le clubId dérivé de l'invitation", async () => {
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: null,
+      });
+      athletesService.createWithinTransaction.mockResolvedValue({
         id: ATHLETE_ID,
         app_user: { id: APP_USER_ID, email: "test@ekvara.fr" },
       });
 
-      await service.register({
-        email: "Test@Ekvara.fr",
-        password: "motdepasse123",
-        nom: "Dupont",
-        prenom: "Jean",
-      });
+      await service.register(REGISTER_DTO);
 
-      const [dto, passwordHash] = athletesService.create.mock.calls[0];
+      const [usedTx, dto, passwordHash] = athletesService.createWithinTransaction.mock.calls[0];
+      expect(usedTx).toBe(tx);
       expect(passwordHash).not.toBe("motdepasse123");
       expect(passwordHash).toMatch(/^\$argon2id\$/);
       await expect(argon2.verify(passwordHash, "motdepasse123")).resolves.toBe(true);
       // email trim + lowercase avant stockage/recherche
       expect(dto.email).toBe("test@ekvara.fr");
+      expect(dto.clubId).toBe(CLUB_ID);
+    });
+
+    it("revalide et consomme l'invitation avec le tx de la transaction globale (jamais un simple appel /validate)", async () => {
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: null,
+      });
+      athletesService.createWithinTransaction.mockResolvedValue({
+        id: ATHLETE_ID,
+        app_user: { id: APP_USER_ID },
+      });
+
+      await service.register(REGISTER_DTO);
+
+      expect(invitationsService.redeem).toHaveBeenCalledWith(tx, "EKV-ABCD2345");
+    });
+
+    it("rattache automatiquement l'athlète créé au coach créateur de l'invitation (coach_athlete)", async () => {
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: null,
+      });
+      athletesService.createWithinTransaction.mockResolvedValue({
+        id: ATHLETE_ID,
+        app_user: { id: APP_USER_ID },
+      });
+
+      await service.register(REGISTER_DTO);
+
+      expect(tx.coach_athlete.create).toHaveBeenCalledWith({
+        data: { coach_id: INVITER_COACH_ID, athlete_id: ATHLETE_ID },
+      });
+    });
+
+    it("rejoint le groupe assigné si l'invitation en porte un", async () => {
+      const GROUP_ID = "g-6666-6666-6666-666666666666";
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: GROUP_ID,
+      });
+      athletesService.createWithinTransaction.mockResolvedValue({
+        id: ATHLETE_ID,
+        app_user: { id: APP_USER_ID },
+      });
+
+      await service.register(REGISTER_DTO);
+
+      expect(tx.coach_group_athlete.create).toHaveBeenCalledWith({
+        data: { group_id: GROUP_ID, athlete_id: ATHLETE_ID },
+      });
+    });
+
+    it("ne rejoint aucun groupe si l'invitation n'en porte pas (jamais obligatoire)", async () => {
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: null,
+      });
+      athletesService.createWithinTransaction.mockResolvedValue({
+        id: ATHLETE_ID,
+        app_user: { id: APP_USER_ID },
+      });
+
+      await service.register(REGISTER_DTO);
+
+      expect(tx.coach_group_athlete.create).not.toHaveBeenCalled();
     });
 
     it("retourne un token dont le payload contient sub=app_user.id et athleteId=athlete.id", async () => {
-      athletesService.create.mockResolvedValue({
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: null,
+      });
+      athletesService.createWithinTransaction.mockResolvedValue({
         id: ATHLETE_ID,
         app_user: { id: APP_USER_ID, email: "test@ekvara.fr" },
       });
 
-      const { token, athlete } = await service.register({
-        email: "test@ekvara.fr",
-        password: "motdepasse123",
-        nom: "Dupont",
-        prenom: "Jean",
-      });
+      const { token, athlete } = await service.register(REGISTER_DTO);
 
       expect(athlete.id).toBe(ATHLETE_ID);
       const decoded = jwtService.verify(token);
@@ -78,12 +175,24 @@ describe("AuthService", () => {
       expect(decoded.nom).toBeUndefined();
     });
 
-    it("propage l'erreur (ex. ConflictException) si AthletesService.create échoue", async () => {
-      athletesService.create.mockRejectedValue(new Error("email déjà utilisé"));
+    it("code d'invitation invalide -> l'erreur d'InvitationsService.redeem est propagée telle quelle, AthletesService jamais appelé", async () => {
+      invitationsService.redeem.mockRejectedValue(new NotFoundException("Ce code d'invitation n'est pas valide."));
 
-      await expect(
-        service.register({ email: "test@ekvara.fr", password: "motdepasse123", nom: "D", prenom: "J" }),
-      ).rejects.toThrow("email déjà utilisé");
+      await expect(service.register(REGISTER_DTO)).rejects.toBeInstanceOf(NotFoundException);
+      expect(athletesService.createWithinTransaction).not.toHaveBeenCalled();
+    });
+
+    it("propage ConflictException (email déjà utilisé) sans la remplacer par un message générique", async () => {
+      invitationsService.redeem.mockResolvedValue({
+        club_id: CLUB_ID,
+        created_by_coach_id: INVITER_COACH_ID,
+        assigned_group_id: null,
+      });
+      athletesService.createWithinTransaction.mockRejectedValue(
+        new ConflictException("Cet email est déjà utilisé"),
+      );
+
+      await expect(service.register(REGISTER_DTO)).rejects.toThrow("Cet email est déjà utilisé");
     });
   });
 

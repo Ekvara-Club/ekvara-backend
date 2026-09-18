@@ -8,8 +8,11 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AthleteOwnershipGuard } from "../auth/athlete-ownership.guard";
 import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/auth-test.helper";
 
-// GET /athletes/:id est protégé (auth + ownership) ; POST /athletes reste
-// public (création de profil, pas de données existantes à protéger).
+// GET /athletes/:id est protégé (auth + ownership). POST /athletes (création
+// publique sans invitation) a été retiré (voir ticket "Clubs, invitations &
+// inscription Athlete contrôlée V1" §"SUPPRIMER L'INSCRIPTION ATHLETE
+// LIBRE") : seul POST /auth/register (avec invitation valide) crée un
+// athlete désormais.
 describe("AthletesController (HTTP)", () => {
   let app: INestApplication;
   let service: { create: jest.Mock; findOne: jest.Mock };
@@ -52,15 +55,13 @@ describe("AthletesController (HTTP)", () => {
     await app.close();
   });
 
-  it("POST /athletes reste public (pas de guard) et délègue au service", async () => {
-    service.create.mockResolvedValue({ id: VALID_ATHLETE_ID });
-
+  it("POST /athletes n'existe plus (ancien endpoint libre inutilisable)", async () => {
     await request(app.getHttpServer())
       .post("/athletes")
       .send({ email: "test@test.fr", nom: "Test", prenom: "Athlete" })
-      .expect(201);
+      .expect(404);
 
-    expect(service.create).toHaveBeenCalled();
+    expect(service.create).not.toHaveBeenCalled();
   });
 
   it("GET /athletes/:id sans authentification -> 401", async () => {

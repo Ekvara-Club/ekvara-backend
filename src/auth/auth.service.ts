@@ -2,7 +2,8 @@ import { Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import * as argon2 from "argon2";
 import { PrismaService } from "../prisma/prisma.service";
-import { AthletesService } from "../athletes/athletes.service";
+import { AthletesService, mapAthleteCreationError } from "../athletes/athletes.service";
+import { InvitationsService } from "../invitations/invitations.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { JwtPayload } from "./jwt-payload.interface";
@@ -14,19 +15,52 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly athletesService: AthletesService,
+    private readonly invitationsService: InvitationsService,
     private readonly jwtService: JwtService,
   ) {}
 
+  // Transaction UNIQUE englobant : consommation de l'invitation, création
+  // app_user + athlete (club_id dérivé de l'invitation, jamais du client),
+  // rattachement coach_athlete au coach créateur de l'invitation, et
+  // affectation de groupe optionnelle (voir ticket §"TRANSACTION REGISTER").
+  // Toute erreur à n'importe quelle étape fait tout annuler (Prisma
+  // $transaction rollback complet) : jamais un compte créé sans invitation
+  // consommée, ni l'inverse (voir §"ROLLBACK SI CRÉATION ATHLETE ÉCHOUE").
   async register(dto: RegisterDto) {
     const email = dto.email.trim().toLowerCase();
     const passwordHash = await argon2.hash(dto.password, { type: argon2.argon2id });
 
-    // Réutilise AthletesService.create (transaction app_user + athlete déjà
-    // existante) plutôt que de dupliquer cette logique ici.
-    const athlete = await this.athletesService.create(
-      { email, nom: dto.nom, prenom: dto.prenom },
-      passwordHash,
-    );
+    let athlete;
+    try {
+      athlete = await this.prisma.$transaction(async (tx) => {
+        const invitation = await this.invitationsService.redeem(tx, dto.invitationCode);
+
+        const created = await this.athletesService.createWithinTransaction(
+          tx,
+          { email, nom: dto.nom, prenom: dto.prenom, clubId: invitation.club_id },
+          passwordHash,
+        );
+
+        // Le coach créateur de l'invitation suit automatiquement le nouvel
+        // athlète (voir ticket §"RELATION COACH_ATHLETE") : le club représente
+        // l'appartenance organisationnelle, coach_athlete le suivi opérationnel.
+        await tx.coach_athlete.create({
+          data: { coach_id: invitation.created_by_coach_id, athlete_id: created.id },
+        });
+
+        // Groupe optionnel (voir ticket §"INVITATION ET GROUPE") : jamais
+        // obligatoire, l'athlète rejoint simplement le club sans groupe sinon.
+        if (invitation.assigned_group_id) {
+          await tx.coach_group_athlete.create({
+            data: { group_id: invitation.assigned_group_id, athlete_id: created.id },
+          });
+        }
+
+        return created;
+      });
+    } catch (error) {
+      throw mapAthleteCreationError(error);
+    }
 
     const token = this.signToken({ sub: athlete.app_user.id, athleteId: athlete.id });
     return { athlete, token };

@@ -71,14 +71,15 @@ model athlete_goal {
 }
 
 model club {
-  id            String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nom           String          @db.VarChar(255)
-  pays          String?         @db.VarChar(100)
-  ville         String?         @db.VarChar(100)
-  created_at    DateTime?       @default(now()) @db.Timestamp(6)
-  updated_at    DateTime?       @default(now()) @db.Timestamp(6)
-  athlete       athlete[]
-  coach_profile coach_profile[]
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nom              String             @db.VarChar(255)
+  pays             String?            @db.VarChar(100)
+  ville            String?            @db.VarChar(100)
+  created_at       DateTime?          @default(now()) @db.Timestamp(6)
+  updated_at       DateTime?          @default(now()) @db.Timestamp(6)
+  athlete          athlete[]
+  coach_profile    coach_profile[]
+  club_invitation  club_invitation[]
 }
 
 model competition {
@@ -367,6 +368,7 @@ model coach_profile {
   coach_training_session        coach_training_session[]
   exercises                     exercise[]
   coach_competition_preparation coach_competition_preparation[]
+  club_invitation               club_invitation[]
 }
 
 // Sélection/préparation interne du coach pour une compétition — distincte
@@ -432,6 +434,7 @@ model coach_group {
   coach_training_group_source coach_training_group_source[]
   coach_exercise_group_source coach_exercise_group_source[]
   coach_training_assignment   coach_training_assignment[]
+  club_invitation             club_invitation[]
 
   @@unique([coach_id, name])
 }
@@ -611,4 +614,34 @@ model training_attendance {
 
   @@unique([training_session_id, athlete_id])
   @@index([athlete_id])
+}
+
+// Invitation permettant à un athlète de créer son compte en rejoignant un
+// club (Ticket "Clubs, invitations & inscription Athlete contrôlée V1").
+// Le code brut n'est JAMAIS stocké : code_hash est un hash cryptographique du
+// code normalisé (uppercase, séparateurs retirés) — voir InvitationsService.
+// used_at/revoked_at sont indépendants (une invitation non utilisée peut être
+// révoquée ; une invitation déjà utilisée n'est jamais "dé-révocable" via ce
+// champ) : la validité exige les deux null ET expires_at dans le futur (voir
+// InvitationsRepository.consumeIfUsable pour la garantie d'usage unique sous
+// concurrence). assigned_group_id est optionnel : un athlète peut rejoindre
+// le club sans groupe (onDelete: SetNull, jamais Cascade — la suppression
+// d'un groupe ne doit jamais invalider une invitation déjà émise, seule
+// l'affectation de groupe automatique à l'inscription disparaît).
+model club_invitation {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  club_id             String        @db.Uuid
+  created_by_coach_id String        @db.Uuid
+  code_hash           String        @unique @db.VarChar(255)
+  assigned_group_id   String?       @db.Uuid
+  expires_at          DateTime      @db.Timestamp(6)
+  used_at             DateTime?     @db.Timestamp(6)
+  revoked_at          DateTime?     @db.Timestamp(6)
+  created_at          DateTime?     @default(now()) @db.Timestamp(6)
+  club                club          @relation(fields: [club_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  created_by_coach    coach_profile @relation(fields: [created_by_coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  assigned_group      coach_group?  @relation(fields: [assigned_group_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([club_id])
+  @@index([created_by_coach_id])
 }

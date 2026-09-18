@@ -5,6 +5,7 @@ import { MetricsModule } from "../metrics/metrics.module";
 import { WeightsModule } from "../weights/weights.module";
 import { GoalsModule } from "../goals/goals.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { InvitationsModule } from "../invitations/invitations.module";
 import { CoachController } from "./coach.controller";
 import { CoachService } from "./coach.service";
 import { CoachRepository } from "./coach.repository";
@@ -36,6 +37,7 @@ import { CoachTrainingAttendanceService } from "./coach-training-attendance.serv
 import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.repository";
 import { CoachGroupDashboardController } from "./coach-group-dashboard.controller";
 import { CoachGroupDashboardService } from "./coach-group-dashboard.service";
+import { CoachInvitationsController } from "./coach-invitations.controller";
 
 @Module({
   // AthletesModule : réutilise AthletesService.findOne() pour GET
@@ -48,7 +50,15 @@ import { CoachGroupDashboardService } from "./coach-group-dashboard.service";
   // (ticket "Notifications in-app Coach + Athlete V1") : NotificationsRepository
   // pour les mutations déjà transactionnelles (trainings, exercises),
   // NotificationsService pour goals/weight-targets.
-  imports: [AuthGuardsModule, AthletesModule, MetricsModule, WeightsModule, GoalsModule, NotificationsModule],
+  imports: [
+    AuthGuardsModule,
+    AthletesModule,
+    MetricsModule,
+    WeightsModule,
+    GoalsModule,
+    NotificationsModule,
+    InvitationsModule,
+  ],
   controllers: [
     CoachController,
     CoachGroupsController,
@@ -63,6 +73,7 @@ import { CoachGroupDashboardService } from "./coach-group-dashboard.service";
     CoachTrainingAttendanceController,
     CoachAthleteAttendanceController,
     CoachGroupDashboardController,
+    CoachInvitationsController,
   ],
   providers: [
     CoachService,

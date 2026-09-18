@@ -1,5 +1,13 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { ConflictException, INestApplication, UnauthorizedException, ValidationPipe } from "@nestjs/common";
+import {
+  ConflictException,
+  ForbiddenException,
+  GoneException,
+  INestApplication,
+  NotFoundException,
+  UnauthorizedException,
+  ValidationPipe,
+} from "@nestjs/common";
 import { ThrottlerModule } from "@nestjs/throttler";
 import cookieParser from "cookie-parser";
 import request = require("supertest");
@@ -7,6 +15,7 @@ import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { AUTH_COOKIE_NAME } from "./auth.cookie";
+import { InvitationsService } from "../invitations/invitations.service";
 import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/auth-test.helper";
 
 describe("AuthController (HTTP)", () => {
@@ -17,8 +26,16 @@ describe("AuthController (HTTP)", () => {
     getMe: jest.Mock;
     getTokenRemainingMs: jest.Mock;
   };
+  let invitationsService: { validate: jest.Mock };
 
   const ATHLETE_ID = "240fe60f-6e74-46ea-87a0-45872bd1f4fe";
+  const VALID_BODY = {
+    invitationCode: "EKV-ABCD2345",
+    email: "test@ekvara.fr",
+    password: "motdepasse123",
+    nom: "Dupont",
+    prenom: "Jean",
+  };
 
   beforeEach(async () => {
     service = {
@@ -27,11 +44,16 @@ describe("AuthController (HTTP)", () => {
       getMe: jest.fn(),
       getTokenRemainingMs: jest.fn().mockReturnValue(3_600_000),
     };
+    invitationsService = { validate: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule(), ThrottlerModule.forRoot([{ ttl: 60_000, limit: 1000 }])],
       controllers: [AuthController],
-      providers: [{ provide: AuthService, useValue: service }, JwtAuthGuard],
+      providers: [
+        { provide: AuthService, useValue: service },
+        { provide: InvitationsService, useValue: invitationsService },
+        JwtAuthGuard,
+      ],
     }).compile();
 
     app = moduleRef.createNestApplication();
@@ -55,7 +77,7 @@ describe("AuthController (HTTP)", () => {
 
       const res = await request(app.getHttpServer())
         .post("/auth/register")
-        .send({ email: "test@ekvara.fr", password: "motdepasse123", nom: "Dupont", prenom: "Jean" })
+        .send(VALID_BODY)
         .expect(201);
 
       expect(res.body).not.toHaveProperty("password_hash");
@@ -72,7 +94,7 @@ describe("AuthController (HTTP)", () => {
     it("email invalide -> 400", async () => {
       await request(app.getHttpServer())
         .post("/auth/register")
-        .send({ email: "pas-un-email", password: "motdepasse123", nom: "Dupont", prenom: "Jean" })
+        .send({ ...VALID_BODY, email: "pas-un-email" })
         .expect(400);
       expect(service.register).not.toHaveBeenCalled();
     });
@@ -80,17 +102,118 @@ describe("AuthController (HTTP)", () => {
     it("password trop court -> 400", async () => {
       await request(app.getHttpServer())
         .post("/auth/register")
-        .send({ email: "test@ekvara.fr", password: "court", nom: "Dupont", prenom: "Jean" })
+        .send({ ...VALID_BODY, password: "court" })
         .expect(400);
       expect(service.register).not.toHaveBeenCalled();
     });
 
-    it("email déjà utilisé -> 409 (délégué au service)", async () => {
-      service.register.mockRejectedValue(new ConflictException("Cet email est déjà utilisé"));
+    // Ancien comportement : register sans code fonctionnait. Depuis le
+    // ticket "Clubs, invitations & inscription Athlete contrôlée V1",
+    // invitationCode est un champ requis du DTO — absent, la validation
+    // rejette la requête avant même d'atteindre le service.
+    it("invitationCode absent -> 400 (register sans code refusé)", async () => {
+      const { invitationCode, ...bodyWithoutCode } = VALID_BODY;
+      void invitationCode;
 
       await request(app.getHttpServer())
         .post("/auth/register")
-        .send({ email: "test@ekvara.fr", password: "motdepasse123", nom: "Dupont", prenom: "Jean" })
+        .send(bodyWithoutCode)
+        .expect(400);
+      expect(service.register).not.toHaveBeenCalled();
+    });
+
+    it("email déjà utilisé -> 409 (délégué au service), invitation non consommée par construction (voir AuthService)", async () => {
+      service.register.mockRejectedValue(new ConflictException("Cet email est déjà utilisé"));
+
+      await request(app.getHttpServer()).post("/auth/register").send(VALID_BODY).expect(409);
+    });
+
+    it("code invalide -> 404 (délégué au service)", async () => {
+      service.register.mockRejectedValue(new NotFoundException("Ce code d'invitation n'est pas valide."));
+
+      await request(app.getHttpServer()).post("/auth/register").send(VALID_BODY).expect(404);
+    });
+
+    it("code expiré -> 410 (délégué au service)", async () => {
+      service.register.mockRejectedValue(new GoneException("Ce code d'invitation a expiré."));
+
+      await request(app.getHttpServer()).post("/auth/register").send(VALID_BODY).expect(410);
+    });
+
+    it("code déjà utilisé -> 409 (délégué au service)", async () => {
+      service.register.mockRejectedValue(new ConflictException("Ce code d'invitation a déjà été utilisé."));
+
+      await request(app.getHttpServer()).post("/auth/register").send(VALID_BODY).expect(409);
+    });
+
+    it("code révoqué -> 403 (délégué au service)", async () => {
+      service.register.mockRejectedValue(new ForbiddenException("Ce code d'invitation n'est plus valide."));
+
+      await request(app.getHttpServer()).post("/auth/register").send(VALID_BODY).expect(403);
+    });
+  });
+
+  describe("POST /auth/invitations/validate", () => {
+    it("code valide -> 200 avec le nom du club, jamais de coachId/clubId interne", async () => {
+      invitationsService.validate.mockResolvedValue({
+        valid: true,
+        club: { name: "Team Ekvara" },
+        expiresAt: new Date("2026-09-25T00:00:00.000Z"),
+      });
+
+      const res = await request(app.getHttpServer())
+        .post("/auth/invitations/validate")
+        .send({ code: "EKV-ABCD2345" })
+        .expect(200);
+
+      expect(res.body).toEqual({
+        valid: true,
+        club: { name: "Team Ekvara" },
+        expiresAt: "2026-09-25T00:00:00.000Z",
+      });
+      expect(JSON.stringify(res.body)).not.toMatch(/coach|hash|clubId/i);
+    });
+
+    it("code absent du body -> 400", async () => {
+      await request(app.getHttpServer()).post("/auth/invitations/validate").send({}).expect(400);
+      expect(invitationsService.validate).not.toHaveBeenCalled();
+    });
+
+    it("code inconnu -> 404", async () => {
+      invitationsService.validate.mockRejectedValue(
+        new NotFoundException("Ce code d'invitation n'est pas valide."),
+      );
+
+      await request(app.getHttpServer())
+        .post("/auth/invitations/validate")
+        .send({ code: "EKV-ZZZZ0000" })
+        .expect(404);
+    });
+
+    it("code expiré -> 410", async () => {
+      invitationsService.validate.mockRejectedValue(new GoneException("expiré"));
+
+      await request(app.getHttpServer())
+        .post("/auth/invitations/validate")
+        .send({ code: "EKV-ABCD2345" })
+        .expect(410);
+    });
+
+    it("code révoqué -> 403", async () => {
+      invitationsService.validate.mockRejectedValue(new ForbiddenException("révoqué"));
+
+      await request(app.getHttpServer())
+        .post("/auth/invitations/validate")
+        .send({ code: "EKV-ABCD2345" })
+        .expect(403);
+    });
+
+    it("code déjà utilisé -> 409", async () => {
+      invitationsService.validate.mockRejectedValue(new ConflictException("déjà utilisé"));
+
+      await request(app.getHttpServer())
+        .post("/auth/invitations/validate")
+        .send({ code: "EKV-ABCD2345" })
         .expect(409);
     });
   });
