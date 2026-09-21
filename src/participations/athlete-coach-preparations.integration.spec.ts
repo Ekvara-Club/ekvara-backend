@@ -314,13 +314,16 @@ describe("Préparations coach visibles côté athlète (intégration HTTP + Post
 
   it("12 : lire next/liste ne crée, ne modifie, ne supprime aucune participation", async () => {
     await prep(coach1Id, athleteA.id, comp.near, {});
-    const before = await prisma.participation.count();
+    // Comptes restreints à NOS fixtures : d'autres suites d'intégration
+    // écrivent en parallèle dans la même table, un compte global serait flaky.
+    const ours = { competition_id: { in: competitionIds } };
+    const before = await prisma.participation.count({ where: ours });
 
     await next(athleteA).expect(200);
     await list(athleteA).expect(200);
     await request(app.getHttpServer()).get(`/athletes/${athleteA.id}/competitions`).set("Cookie", cookieFor(athleteA)).expect(200);
 
-    expect(await prisma.participation.count()).toBe(before);
+    expect(await prisma.participation.count({ where: ours })).toBe(before);
     expect(await prisma.participation.count({ where: { athlete_id: athleteA.id } })).toBe(0);
   });
 });
