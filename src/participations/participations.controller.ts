@@ -25,6 +25,15 @@ export class ParticipationsController {
     return this.participationsService.findAllForAthlete(athleteId);
   }
 
+  // Préparations coach visibles par l'athlète (vue Athlete-safe : jamais de
+  // note_coach). Sous-ressource distincte de GET / (participations) : les
+  // stats/palmarès/activité consomment GET / et ne doivent jamais recevoir
+  // une préparation comme si c'était une participation.
+  @Get("preparations")
+  findCoachPreparations(@Param("athleteId", ParseUUIDPipe) athleteId: string) {
+    return this.participationsService.findCoachPreparationsForAthlete(athleteId);
+  }
+
   @Get("next")
   async findNext(@Param("athleteId", ParseUUIDPipe) athleteId: string, @Res() res: Response) {
     const result = await this.participationsService.findNextForAthlete(athleteId);

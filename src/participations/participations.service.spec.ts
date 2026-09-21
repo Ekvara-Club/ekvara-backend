@@ -13,6 +13,8 @@ describe("ParticipationsService", () => {
     create: jest.Mock;
     findAllByAthlete: jest.Mock;
     findNextByAthlete: jest.Mock;
+    findCoachPreparationsByAthlete: jest.Mock;
+    findParticipationCompetitionIds: jest.Mock;
     updateResult: jest.Mock;
   };
   let competitionsRepository: { findById: jest.Mock };
@@ -52,6 +54,10 @@ describe("ParticipationsService", () => {
       create: jest.fn(),
       findAllByAthlete: jest.fn(),
       findNextByAthlete: jest.fn(),
+      // Par défaut : aucune préparation coach — les tests historiques de
+      // findNextForAthlete restent des tests "participation seulement".
+      findCoachPreparationsByAthlete: jest.fn().mockResolvedValue([]),
+      findParticipationCompetitionIds: jest.fn().mockResolvedValue([]),
       updateResult: jest.fn(),
     };
     competitionsRepository = { findById: jest.fn() };
@@ -190,10 +196,12 @@ describe("ParticipationsService", () => {
       const result = await service.findNextForAthlete(ATHLETE_ID);
 
       expect(result).toEqual({
+        source: "participation",
         participationId: "p-1",
         statut: "inscrit",
         categoriePoids: "-74 kg",
         categorieAge: "senior",
+        preparation: null,
         competition: {
           id: COMPETITION_ID,
           nom: "Belgian Open",
@@ -488,6 +496,187 @@ describe("ParticipationsService", () => {
       const [, data] = participationsRepository.updateResult.mock.calls[0];
       expect(data).not.toHaveProperty("statut");
       expect(data).not.toHaveProperty("points_gagnes");
+    });
+  });
+  describe("findNextForAthlete avec préparations coach", () => {
+    function daysFromToday(offset: number): Date {
+      const now = new Date();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + offset));
+    }
+
+    function competition(id: string, offset: number) {
+      return { ...competitionRow, id, nom: `Compétition ${id}`, date_debut: daysFromToday(offset) };
+    }
+
+    function preparation(id: string, offset: number, overrides: Record<string, unknown> = {}) {
+      return {
+        competition_id: id,
+        statut: "pret",
+        categorie_age_prevue: "Senior",
+        categorie_poids_prevue: "-68kg",
+        competition: competition(id, offset),
+        ...overrides,
+      };
+    }
+
+    function participation(id: string, offset: number, overrides: Record<string, unknown> = {}) {
+      return { ...participationRow, id: `p-${id}`, competition: competition(id, offset), ...overrides };
+    }
+
+    beforeEach(() => {
+      participationsRepository.athleteExists.mockResolvedValue(true);
+      participationsRepository.findNextByAthlete.mockResolvedValue(null);
+    });
+
+    it("préparation seule -> source coach_preparation, sans participationId/statut/catégories officiels", async () => {
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([preparation("x", 30)]);
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({
+        source: "coach_preparation",
+        participationId: null,
+        statut: null,
+        categoriePoids: null,
+        categorieAge: null,
+        preparation: { status: "pret", categorieAgePrevue: "Senior", categoriePoidsPrevue: "-68kg" },
+        competition: { id: "x", nom: "Compétition x" },
+      });
+    });
+
+    it("participation seule -> inchangé (source participation, preparation null)", async () => {
+      participationsRepository.findNextByAthlete.mockResolvedValue(participation("x", 30));
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({ source: "participation", participationId: "p-x", preparation: null });
+    });
+
+    it("participation + préparation sur la MÊME compétition -> une seule, participation prime et reste intacte", async () => {
+      participationsRepository.findNextByAthlete.mockResolvedValue(
+        participation("x", 30, { categorie_poids: "-74 kg", categorie_age: "cadet" }),
+      );
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([preparation("x", 30)]);
+      participationsRepository.findParticipationCompetitionIds.mockResolvedValue(["x"]);
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({
+        source: "participation",
+        participationId: "p-x",
+        statut: "inscrit",
+        // Catégories OFFICIELLES jamais écrasées par la catégorie prévue.
+        categoriePoids: "-74 kg",
+        categorieAge: "cadet",
+        preparation: { status: "pret", categoriePoidsPrevue: "-68kg" },
+      });
+    });
+
+    it("plusieurs compétitions -> la plus proche par date l'emporte (préparation plus proche que la participation)", async () => {
+      participationsRepository.findNextByAthlete.mockResolvedValue(participation("far", 60));
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([
+        preparation("near", 10),
+        preparation("mid", 30),
+      ]);
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({ source: "coach_preparation", competition: { id: "near" } });
+    });
+
+    it("plusieurs compétitions -> la participation plus proche que la préparation l'emporte", async () => {
+      participationsRepository.findNextByAthlete.mockResolvedValue(participation("near", 10));
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([preparation("far", 60)]);
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({ source: "participation", competition: { id: "near" } });
+    });
+
+    it("à date égale, la participation prime sur une autre préparation", async () => {
+      participationsRepository.findNextByAthlete.mockResolvedValue(participation("a", 20));
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([preparation("b", 20)]);
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({ source: "participation", competition: { id: "a" } });
+    });
+
+    it("préparation forfait -> jamais 'prochaine compétition' (null)", async () => {
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([
+        preparation("x", 30, { statut: "forfait" }),
+      ]);
+
+      expect(await service.findNextForAthlete(ATHLETE_ID)).toBeNull();
+    });
+
+    it("préparation forfait ignorée : la compétition suivante active est retenue", async () => {
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([
+        preparation("forfeit", 10, { statut: "forfait" }),
+        preparation("next", 40),
+      ]);
+
+      const result = await service.findNextForAthlete(ATHLETE_ID);
+
+      expect(result).toMatchObject({ competition: { id: "next" } });
+    });
+
+    it("préparation d'une compétition dont la participation est annulée/retirée -> pas présentée comme prévue", async () => {
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([preparation("x", 30)]);
+      participationsRepository.findParticipationCompetitionIds.mockResolvedValue(["x"]);
+
+      expect(await service.findNextForAthlete(ATHLETE_ID)).toBeNull();
+    });
+
+    it("requête les préparations à partir de minuit UTC (les compétitions passées ne sont jamais 'next')", async () => {
+      await service.findNextForAthlete(ATHLETE_ID);
+
+      const [athleteArg, fromDate] = participationsRepository.findCoachPreparationsByAthlete.mock.calls[0];
+      expect(athleteArg).toBe(ATHLETE_ID);
+      expect(fromDate).toEqual(daysFromToday(0));
+    });
+
+    it("aucune participation ni préparation -> null", async () => {
+      expect(await service.findNextForAthlete(ATHLETE_ID)).toBeNull();
+    });
+
+    it("le résultat ne contient jamais de champ privé coach", async () => {
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([
+        { ...preparation("x", 30), note_coach: "NOTE-SECRETE", objectif: "OBJ-SECRET", coach_id: "coach-1" },
+      ]);
+
+      const serialized = JSON.stringify(await service.findNextForAthlete(ATHLETE_ID));
+
+      expect(serialized).not.toContain("NOTE-SECRETE");
+      expect(serialized).not.toContain("OBJ-SECRET");
+      expect(serialized).not.toMatch(/note_coach|coachNote|coach_id|coachId/);
+    });
+
+    it("ne crée ni ne modifie jamais de participation", async () => {
+      participationsRepository.findCoachPreparationsByAthlete.mockResolvedValue([preparation("x", 30)]);
+
+      await service.findNextForAthlete(ATHLETE_ID);
+      await service.findCoachPreparationsForAthlete(ATHLETE_ID);
+
+      expect(participationsRepository.create).not.toHaveBeenCalled();
+      expect(participationsRepository.updateResult).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("findCoachPreparationsForAthlete", () => {
+    it("athlète inexistant -> NotFoundException", async () => {
+      participationsRepository.athleteExists.mockResolvedValue(false);
+
+      await expect(service.findCoachPreparationsForAthlete(ATHLETE_ID)).rejects.toBeInstanceOf(NotFoundException);
+      expect(participationsRepository.findCoachPreparationsByAthlete).not.toHaveBeenCalled();
+    });
+
+    it("ne lit que les préparations de l'athlète demandé", async () => {
+      participationsRepository.athleteExists.mockResolvedValue(true);
+
+      await service.findCoachPreparationsForAthlete(ATHLETE_ID);
+
+      expect(participationsRepository.findCoachPreparationsByAthlete).toHaveBeenCalledWith(ATHLETE_ID);
     });
   });
 });

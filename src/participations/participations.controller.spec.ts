@@ -17,6 +17,7 @@ describe("ParticipationsController (HTTP)", () => {
     participate: jest.Mock;
     findAllForAthlete: jest.Mock;
     findNextForAthlete: jest.Mock;
+    findCoachPreparationsForAthlete: jest.Mock;
     updateResult: jest.Mock;
   };
 
@@ -32,6 +33,7 @@ describe("ParticipationsController (HTTP)", () => {
       participate: jest.fn(),
       findAllForAthlete: jest.fn(),
       findNextForAthlete: jest.fn(),
+      findCoachPreparationsForAthlete: jest.fn(),
       updateResult: jest.fn(),
     };
 
@@ -144,6 +146,41 @@ describe("ParticipationsController (HTTP)", () => {
       .expect(200);
 
     expect(res.body).toBeNull();
+  });
+
+  it("GET .../competitions/preparations sans authentification -> 401, service jamais appelé", async () => {
+    await request(app.getHttpServer()).get(`/athletes/${VALID_ATHLETE_ID}/competitions/preparations`).expect(401);
+
+    expect(service.findCoachPreparationsForAthlete).not.toHaveBeenCalled();
+  });
+
+  it("GET .../competitions/preparations avec le token d'un autre athlète -> 403, service jamais appelé", async () => {
+    await request(app.getHttpServer())
+      .get(`/athletes/${VALID_ATHLETE_ID}/competitions/preparations`)
+      .set("Cookie", otherAthleteAuthCookie)
+      .expect(403);
+
+    expect(service.findCoachPreparationsForAthlete).not.toHaveBeenCalled();
+  });
+
+  it("GET .../competitions/preparations avec un athleteId arbitraire (≠ token) -> 403, jamais de lecture", async () => {
+    await request(app.getHttpServer())
+      .get(`/athletes/${OTHER_ATHLETE_ID}/competitions/preparations`)
+      .set("Cookie", authCookie)
+      .expect(403);
+
+    expect(service.findCoachPreparationsForAthlete).not.toHaveBeenCalled();
+  });
+
+  it("GET .../competitions/preparations valide délègue au service avec l'athleteId du chemin (= celui du token)", async () => {
+    service.findCoachPreparationsForAthlete.mockResolvedValue([]);
+
+    await request(app.getHttpServer())
+      .get(`/athletes/${VALID_ATHLETE_ID}/competitions/preparations`)
+      .set("Cookie", authCookie)
+      .expect(200, []);
+
+    expect(service.findCoachPreparationsForAthlete).toHaveBeenCalledWith(VALID_ATHLETE_ID);
   });
 
   it("PATCH .../result sans authentification -> 401", async () => {

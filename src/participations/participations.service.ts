@@ -10,6 +10,14 @@ import { CompetitionsRepository } from "../competitions/competitions.repository"
 import { CreateParticipationDto } from "./dto/create-participation.dto";
 import { UpdateParticipationResultDto } from "./dto/update-participation-result.dto";
 import { ParticipationsRepository, ParticipationWithCompetition } from "./participations.repository";
+import {
+  AthleteCoachPreparationSummary,
+  AthleteCoachPreparationView,
+  isActivePreparation,
+  resolveCoachPreparations,
+  toPreparationSummary,
+} from "./athlete-coach-preparations";
+import { toCompetitionView } from "./participation-views";
 
 @Injectable()
 export class ParticipationsService {
@@ -54,6 +62,22 @@ export class ParticipationsService {
     return participations.map(toParticipationView);
   }
 
+  // Préparations coach de l'athlète (vue Athlete-safe, dédupliquée par
+  // compétition, tous statuts et toutes dates — le frontend filtre). Ne
+  // touche jamais `participation`.
+  async findCoachPreparationsForAthlete(athleteId: string): Promise<AthleteCoachPreparationView[]> {
+    await this.assertAthleteExists(athleteId);
+
+    const rows = await this.participationsRepository.findCoachPreparationsByAthlete(athleteId);
+    return resolveCoachPreparations(rows);
+  }
+
+  // "Prochaine compétition" = la plus proche parmi (A) la prochaine
+  // participation active et (B) les préparations coach actives (non forfait)
+  // de compétitions futures qui n'ont AUCUNE participation. Une compétition
+  // présente dans les deux n'apparaît qu'une fois, portée par la
+  // participation (source métier de l'inscription/du résultat), simplement
+  // enrichie de la préparation. À date égale, la participation prime.
   async findNextForAthlete(athleteId: string) {
     await this.assertAthleteExists(athleteId);
 
@@ -63,8 +87,31 @@ export class ParticipationsService {
     const now = new Date();
     const todayUtcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-    const next = await this.participationsRepository.findNextByAthlete(athleteId, todayUtcMidnight);
-    return next ? toNextParticipationView(next) : null;
+    const [nextParticipation, preparationRows] = await Promise.all([
+      this.participationsRepository.findNextByAthlete(athleteId, todayUtcMidnight),
+      this.participationsRepository.findCoachPreparationsByAthlete(athleteId, todayUtcMidnight),
+    ]);
+
+    const activePreparations = resolveCoachPreparations(preparationRows).filter(isActivePreparation);
+
+    let preparationOnly: AthleteCoachPreparationView | null = null;
+    if (activePreparations.length > 0) {
+      const withParticipation = new Set(
+        await this.participationsRepository.findParticipationCompetitionIds(
+          athleteId,
+          activePreparations.map((p) => p.competitionId),
+        ),
+      );
+      // activePreparations est déjà trié par date de début croissante.
+      preparationOnly = activePreparations.find((p) => !withParticipation.has(p.competitionId)) ?? null;
+    }
+
+    if (nextParticipation && (!preparationOnly || nextParticipation.competition.date_debut <= preparationOnly.competition.dateDebut)) {
+      const enrichment = activePreparations.find((p) => p.competitionId === nextParticipation.competition.id);
+      return toNextParticipationView(nextParticipation, enrichment ? toPreparationSummary(enrichment) : null);
+    }
+
+    return preparationOnly ? toNextPreparationView(preparationOnly) : null;
   }
 
   async updateResult(athleteId: string, competitionId: string, dto: UpdateParticipationResultDto) {
@@ -139,20 +186,6 @@ function assertAtLeastOneResultField(dto: UpdateParticipationResultDto): void {
   }
 }
 
-function toCompetitionView(competition: ParticipationWithCompetition["competition"]) {
-  return {
-    id: competition.id,
-    nom: competition.nom,
-    dateDebut: competition.date_debut,
-    dateFin: competition.date_fin,
-    lieu: competition.lieu,
-    ville: competition.ville,
-    pays: competition.pays,
-    niveau: competition.niveau,
-    source: competition.sources[0]?.source ?? null,
-  };
-}
-
 function toParticipationView(participation: ParticipationWithCompetition) {
   return {
     id: participation.id,
@@ -168,12 +201,34 @@ function toParticipationView(participation: ParticipationWithCompetition) {
   };
 }
 
-function toNextParticipationView(participation: ParticipationWithCompetition) {
+// `source` + `participationId` nullable : le dashboard distingue une
+// inscription officielle ("participation") d'une simple préparation coach
+// ("coach_preparation", sans participationId/statut/catégories officiels).
+// categoriePoids/categorieAge restent EXCLUSIVEMENT ceux de la participation ;
+// les catégories prévues par le coach vivent dans `preparation`.
+function toNextParticipationView(
+  participation: ParticipationWithCompetition,
+  preparation: AthleteCoachPreparationSummary | null,
+) {
   return {
-    participationId: participation.id,
-    statut: participation.statut,
+    source: "participation" as const,
+    participationId: participation.id as string | null,
+    statut: participation.statut as string | null,
     categoriePoids: participation.categorie_poids,
     categorieAge: participation.categorie_age,
     competition: toCompetitionView(participation.competition),
+    preparation,
+  };
+}
+
+function toNextPreparationView(preparation: AthleteCoachPreparationView) {
+  return {
+    source: "coach_preparation" as const,
+    participationId: null as string | null,
+    statut: null as string | null,
+    categoriePoids: null as string | null,
+    categorieAge: null as string | null,
+    competition: preparation.competition,
+    preparation: toPreparationSummary(preparation),
   };
 }
