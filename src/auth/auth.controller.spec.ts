@@ -14,7 +14,9 @@ import request = require("supertest");
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { JwtAuthGuard } from "./jwt-auth.guard";
-import { AUTH_COOKIE_NAME } from "./auth.cookie";
+import { AUTH_COOKIE_NAMES } from "./auth.cookie";
+
+const AUTH_COOKIE_NAME = AUTH_COOKIE_NAMES.athlete;
 import { InvitationsService } from "../invitations/invitations.service";
 import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/auth-test.helper";
 

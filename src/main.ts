@@ -16,6 +16,9 @@ async function bootstrap() {
   app.enableCors({
     origin: ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // X-Ekvara-App : sélectionne la session (cookie) de l'application
+    // appelante — voir auth.cookie.ts.
+    allowedHeaders: ["Content-Type", "X-Ekvara-App"],
     credentials: true,
   });
 

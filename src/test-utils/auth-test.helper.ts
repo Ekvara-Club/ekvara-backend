@@ -1,7 +1,7 @@
 import { JwtModule, JwtService } from "@nestjs/jwt";
 import type { DynamicModule } from "@nestjs/common";
 import type { SignOptions } from "jsonwebtoken";
-import { AUTH_COOKIE_NAME } from "../auth/auth.cookie";
+import { AUTH_COOKIE_NAMES, type AppContext } from "../auth/auth.cookie";
 import type { JwtPayload } from "../auth/jwt-payload.interface";
 
 // Secret dédié aux tests uniquement, jamais utilisé en dehors des specs.
@@ -19,6 +19,9 @@ export function signTestToken(payload: JwtPayload, expiresIn?: string): string {
   );
 }
 
-export function authCookieHeader(token: string): string {
-  return `${AUTH_COOKIE_NAME}=${token}`;
+// `context` = application qui porte la session (cookie distinct par app) ;
+// "athlete" par défaut, comme le contexte par défaut du backend quand
+// X-Ekvara-App est absent (voir resolveAppContext).
+export function authCookieHeader(token: string, context: AppContext = "athlete"): string {
+  return `${AUTH_COOKIE_NAMES[context]}=${token}`;
 }

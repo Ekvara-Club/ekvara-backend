@@ -5,7 +5,14 @@ import { AuthService } from "./auth.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { JwtAuthGuard } from "./jwt-auth.guard";
-import { AUTH_COOKIE_NAME, buildAuthCookieOptions, buildLogoutCookieOptions } from "./auth.cookie";
+import {
+  LEGACY_AUTH_COOKIE_NAME,
+  type AppContext,
+  authCookieNameFor,
+  buildAuthCookieOptions,
+  buildLogoutCookieOptions,
+  resolveAppContext,
+} from "./auth.cookie";
 import { InvitationsService } from "../invitations/invitations.service";
 import { ValidateInvitationDto } from "../invitations/dto/validate-invitation.dto";
 
@@ -29,28 +36,35 @@ export class AuthController {
 
   @Post("register")
   @UseGuards(ThrottlerGuard)
-  async register(@Body() dto: RegisterDto, @Res({ passthrough: true }) res: Response) {
+  async register(@Body() dto: RegisterDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    // Contexte validé AVANT toute écriture : un en-tête invalide ne crée rien.
+    const context = resolveAppContext(req);
     const { athlete, token } = await this.authService.register(dto);
-    this.setAuthCookie(res, token);
+    this.setAuthCookie(res, context, token);
     return athlete;
   }
 
   @Post("login")
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
+  async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const context = resolveAppContext(req);
     const { athlete, token } = await this.authService.login(dto);
-    this.setAuthCookie(res, token);
+    this.setAuthCookie(res, context, token);
     return athlete;
   }
 
   @Post("logout")
   @HttpCode(HttpStatus.OK)
-  logout(@Res({ passthrough: true }) res: Response) {
-    // Efface le cookie côté navigateur. Un JWT copié avant logout reste
-    // cryptographiquement valide jusqu'à expiration : volontairement pas de
-    // blacklist/révocation pour ce MVP.
-    res.clearCookie(AUTH_COOKIE_NAME, buildLogoutCookieOptions());
+  logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    // N'efface QUE la session de l'application appelante : se déconnecter
+    // côté athlète ne doit pas fermer la session coach (et inversement).
+    // Un JWT copié avant logout reste cryptographiquement valide jusqu'à
+    // expiration : volontairement pas de blacklist/révocation pour ce MVP.
+    const context = resolveAppContext(req);
+    res.clearCookie(authCookieNameFor(context), buildLogoutCookieOptions());
+    // Nettoyage de l'ancien cookie partagé, inerte depuis la séparation.
+    res.clearCookie(LEGACY_AUTH_COOKIE_NAME, buildLogoutCookieOptions());
     return { success: true };
   }
 
@@ -60,8 +74,8 @@ export class AuthController {
     return this.authService.getMe(req.user!.athleteId);
   }
 
-  private setAuthCookie(res: Response, token: string): void {
+  private setAuthCookie(res: Response, context: AppContext, token: string): void {
     const maxAge = this.authService.getTokenRemainingMs(token);
-    res.cookie(AUTH_COOKIE_NAME, token, buildAuthCookieOptions(maxAge));
+    res.cookie(authCookieNameFor(context), token, buildAuthCookieOptions(maxAge));
   }
 }
