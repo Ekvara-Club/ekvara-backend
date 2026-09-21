@@ -349,20 +349,150 @@ describe("WtResultsImportService (intégration Postgres, importer HTTP simulé)"
       expect(stored.athlete_a.country_code).toBeNull();
     });
 
-    it("doublon CÔTÉ SOURCE (mêmes athlètes/stade/score/méthode, identifiants de match distincts) ⇒ les deux conservés, anomalie rapportée", async () => {
-      const { competition, slug } = await scenario("dup");
+    // --- Ticket #12B : une représentation source != un combat réel -----------------
+
+    async function storedFor(competitionId: string) {
+      const matches = await prisma.competition_match.findMany({
+        where: { competition_id: competitionId },
+        include: { sources: true },
+        orderBy: { created_at: "asc" },
+      });
+      return {
+        matches,
+        sources: matches.flatMap((m) => m.sources.map((s) => s.source_external_id)).sort(),
+      };
+    }
+
+    it("SAME LOGICAL FIGHT : 4 représentations source identiques ⇒ UN competition_match, les 4 identifiants conservés comme provenance", async () => {
+      const { competition, slug } = await scenario("same4");
       const [alice, bruno] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR")];
-      const [d1, d2] = [randomUUID(), randomUUID()];
+      const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+      const options = { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A" as const, stage: "F", contestNumber: 1 };
+      registerMatches(slug, ids.map((id) => ({ id, options })));
+
+      const report = await run({ slugs: [slug] });
+
+      expect(report.competitions[0]).toMatchObject({ matchesFetched: 4, matchesCreated: 1, matchesAttached: 3, matchesConflicts: 0 });
+      expect(report.matches).toMatchObject({ sameLogicalFight: 3, conflicts: 0, ambiguous: 0 });
+      const stored = await storedFor(competition.id);
+      expect(stored.matches).toHaveLength(1);
+      expect(stored.sources).toEqual([...ids].sort());
+      // Le combat garde la représentation retenue à la création (comportement historique).
+      expect(stored.matches[0].source_external_id).toBe(ids[0]);
+    });
+
+    it("IDEMPOTENCE : relancer (avec ou sans refresh) ne crée aucun nouveau combat ni aucune nouvelle représentation", async () => {
+      const { competition, slug } = await scenario("idem12b");
+      const [alice, bruno] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR")];
+      const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+      const options = { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A" as const, stage: "F", contestNumber: 1 };
+      registerMatches(slug, ids.map((id) => ({ id, options })));
+      await run({ slugs: [slug] });
+      const before = await storedFor(competition.id);
+
+      // Sans refresh : toutes les représentations sont déjà connues, aucune page match demandée.
+      fake.calls = [];
+      const second = await run({ slugs: [slug] });
+      expect(second.competitions[0]).toMatchObject({ matchesSkippedExisting: 4, matchesCreated: 0, matchesAttached: 0, matchesConflicts: 0 });
+      expect(fake.matchCalls()).toBe(0);
+
+      // Avec refresh : les 4 pages sont relues, chacune reconnue comme représentation existante.
+      const third = await run({ slugs: [slug], refreshExisting: true });
+      expect(third.competitions[0]).toMatchObject({ matchesFetched: 4, matchesUpdated: 4, matchesCreated: 0, matchesAttached: 0, matchesConflicts: 0 });
+
+      const after = await storedFor(competition.id);
+      expect(after.matches).toHaveLength(before.matches.length);
+      expect(after.sources).toEqual(before.sources);
+      expect(after.matches.map((m) => m.id)).toEqual(before.matches.map((m) => m.id));
+    });
+
+    it("CONFLICT : même clé mais score/vainqueur divergent ⇒ NON fusionné, les deux combats et leurs identifiants conservés, anomalie explicite", async () => {
+      const { competition, slug } = await scenario("conflict");
+      const [alice, bruno] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR")];
+      const [c1, c2] = [randomUUID(), randomUUID()];
       registerMatches(slug, [
-        { id: d1, options: { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A", stage: "F", contestNumber: 1 } },
-        { id: d2, options: { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A", stage: "F", contestNumber: 1 } },
+        { id: c1, options: { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A", stage: "F", contestNumber: 1 } },
+        { id: c2, options: { a: alice, b: bruno, scoreA: "0", scoreB: "2", winner: "B", stage: "F", contestNumber: 1 } },
       ]);
 
       const report = await run({ slugs: [slug] });
 
-      expect(report.matches.sourceDuplicates).toBe(1);
-      expect(report.anomalies.join("\n")).toContain(`match ${d2}`);
-      expect(await prisma.competition_match.count({ where: { competition_id: competition.id } })).toBe(2);
+      expect(report.competitions[0]).toMatchObject({ matchesCreated: 1, matchesAttached: 0, matchesConflicts: 1 });
+      expect(report.matches).toMatchObject({ conflicts: 1, sameLogicalFight: 0 });
+      expect(report.anomalies.join("\n")).toMatch(new RegExp(`CONFLICT match ${c2}.*scoreA.*NON fusionné`));
+      const stored = await storedFor(competition.id);
+      expect(stored.matches).toHaveLength(2);
+      expect(stored.sources).toEqual([c1, c2].sort());
+      // Chaque combat conserve ses propres données, rien n'a été écrasé.
+      const byId = new Map(stored.matches.map((m) => [m.source_external_id, m]));
+      expect([byId.get(c1)!.score_a, byId.get(c1)!.score_b]).toEqual([2, 0]);
+      expect([byId.get(c2)!.score_a, byId.get(c2)!.score_b]).toEqual([0, 2]);
+    });
+
+    it("CONFLICT : orientation A/B inversée (même paire, page source ordonnée autrement) ⇒ jamais fusionné silencieusement", async () => {
+      const { competition, slug } = await scenario("swap");
+      const [alice, bruno] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR")];
+      const [s1, s2] = [randomUUID(), randomUUID()];
+      registerMatches(slug, [
+        { id: s1, options: { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A", stage: "F", contestNumber: 1 } },
+        { id: s2, options: { a: bruno, b: alice, scoreA: "0", scoreB: "2", winner: "B", stage: "F", contestNumber: 1 } },
+      ]);
+
+      const report = await run({ slugs: [slug] });
+
+      expect(report.matches.conflicts).toBe(1);
+      expect(report.anomalies.join("\n")).toMatch(/orientation/);
+      expect((await storedFor(competition.id)).matches).toHaveLength(2);
+    });
+
+    it("le conflit conservé est stable : relancer avec refresh ne fusionne rien et ne crée rien", async () => {
+      const { competition, slug } = await scenario("conflict-idem");
+      const [alice, bruno] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR")];
+      registerMatches(slug, [
+        { id: randomUUID(), options: { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A", stage: "F", contestNumber: 1 } },
+        { id: randomUUID(), options: { a: alice, b: bruno, scoreA: "0", scoreB: "2", winner: "B", stage: "F", contestNumber: 1 } },
+      ]);
+      await run({ slugs: [slug] });
+      const before = await storedFor(competition.id);
+
+      const refreshed = await run({ slugs: [slug], refreshExisting: true });
+
+      expect(refreshed.competitions[0]).toMatchObject({ matchesCreated: 0, matchesAttached: 0, matchesConflicts: 0 });
+      const after = await storedFor(competition.id);
+      expect(after.matches.map((m) => m.id)).toEqual(before.matches.map((m) => m.id));
+      expect(after.sources).toEqual(before.sources);
+    });
+
+    it("clé différente ⇒ combats distincts : revanche (autre n° de combat), autre catégorie, autre paire", async () => {
+      const { competition, slug } = await scenario("distinct");
+      const [alice, bruno, carla] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR"), fixtureAthlete("Carla TEST", "ESP")];
+      const base = { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A" as const, stage: "F" };
+      registerMatches(slug, [
+        { id: randomUUID(), options: { ...base, contestNumber: 1 } },
+        { id: randomUUID(), options: { ...base, contestNumber: 2 } }, // même paire, autre n° : revanche
+        { id: randomUUID(), options: { ...base, contestNumber: 1, category: "Men -80kg" } }, // autre catégorie
+        { id: randomUUID(), options: { ...base, b: carla, contestNumber: 1 } }, // même n°, autre paire
+      ]);
+
+      const report = await run({ slugs: [slug] });
+
+      expect(report.competitions[0]).toMatchObject({ matchesCreated: 4, matchesAttached: 0, matchesConflicts: 0 });
+      expect((await storedFor(competition.id)).matches).toHaveLength(4);
+    });
+
+    it("clé indéterminée (catégorie ou n° de combat absent) ⇒ jamais de rapprochement, chaque représentation reste un combat", async () => {
+      const { competition, slug } = await scenario("nokey");
+      const [alice, bruno] = [fixtureAthlete("Alice EXEMPLE", "FRA"), fixtureAthlete("Bruno TESTEUR", "KOR")];
+      const options = { a: alice, b: bruno, scoreA: "2", scoreB: "0", winner: "A" as const, stage: "F", contestNumber: null, category: null };
+      registerMatches(slug, [
+        { id: randomUUID(), options },
+        { id: randomUUID(), options },
+      ]);
+
+      const report = await run({ slugs: [slug] });
+
+      expect(report.competitions[0]).toMatchObject({ matchesCreated: 2, matchesAttached: 0 });
+      expect((await storedFor(competition.id)).matches).toHaveLength(2);
     });
 
     it("anomalie de la source (victoire aux points avec score vainqueur non supérieur) : conservée telle quelle + rapportée", async () => {

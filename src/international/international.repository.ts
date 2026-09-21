@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CalendarCandidate } from "./wt-results/wtr-competition-matcher";
+import { diffMatchFacts, hasLogicalKey, MatchFacts, reconcileMatch } from "./wt-results/wtr-match-reconciliation";
 
 export interface AthleteSourceInput {
   source: string;
@@ -39,6 +40,27 @@ export interface ResultsSourceInput {
 
 export type AttachOutcome = "attached" | "refreshed";
 
+// created    : nouveau combat (aucun combat existant partageant la clé) ;
+// attached   : SAME_LOGICAL_FIGHT — l'identifiant source est rattaché au
+//              competition_match existant (aucune ligne créée) ;
+// refreshed  : représentation déjà connue, revue ;
+// conflict   : la clé correspond mais un attribut critique diverge — NON fusionné,
+//              données conservées (nouveau combat, ou ligne inchangée au refresh) ;
+// ambiguous  : plusieurs combats existants cohérents — aucun choix arbitraire,
+//              représentation conservée dans un nouveau combat.
+export type MatchSaveOutcome = "created" | "attached" | "refreshed" | "conflict" | "ambiguous";
+
+export interface MatchSaveResult {
+  matchId: string;
+  // true SEULEMENT si une ligne competition_match a été créée.
+  created: boolean;
+  outcome: MatchSaveOutcome;
+  // Attributs critiques divergents (conflit) ; vide sinon.
+  differences: string[];
+  // Combats existants concernés par un conflit/une ambiguïté.
+  relatedMatchIds: string[];
+}
+
 export class CompetitionSourceConflictError extends Error {}
 
 const ATHLETE_INCLUDE = { sources: { orderBy: { created_at: "asc" as const } } };
@@ -46,6 +68,8 @@ const MATCH_INCLUDE = {
   athlete_a: true,
   athlete_b: true,
   winner: true,
+  // TOUTES les représentations source du combat (provenance complète).
+  sources: { orderBy: [{ created_at: "asc" as const }, { id: "asc" as const }] },
   competition: { select: { id: true, nom: true, date_debut: true, date_fin: true } },
 } satisfies Prisma.competition_matchInclude;
 
@@ -154,18 +178,30 @@ export class InternationalRepository {
   // Matchs
   // -------------------------------------------------------------------------
 
+  // Identifiants de match source DÉJÀ connus, qu'ils soient la représentation
+  // principale d'un combat ou une représentation rattachée (competition_match_source).
   async findExistingMatchIds(source: string, sourceExternalIds: string[]): Promise<Set<string>> {
     if (sourceExternalIds.length === 0) return new Set();
-    const rows = await this.prisma.competition_match.findMany({
-      where: { source, source_external_id: { in: sourceExternalIds } },
-      select: { source_external_id: true },
-    });
-    return new Set(rows.map((r) => r.source_external_id));
+    const [attached, primary] = await Promise.all([
+      this.prisma.competition_match_source.findMany({
+        where: { source, source_external_id: { in: sourceExternalIds } },
+        select: { source_external_id: true },
+      }),
+      this.prisma.competition_match.findMany({
+        where: { source, source_external_id: { in: sourceExternalIds } },
+        select: { source_external_id: true },
+      }),
+    ]);
+    return new Set([...attached, ...primary].map((r) => r.source_external_id));
   }
 
-  // Identité logique = [source, source_external_id] (id du match chez la
-  // source). Jamais noms + date.
-  async upsertMatch(input: MatchInput): Promise<{ matchId: string; created: boolean }> {
+  // Enregistre UNE représentation source (un id de match WT Results). L'identité
+  // d'une représentation est [source, source_external_id] ; l'identité du combat
+  // RÉEL est rapprochée de façon conservatrice par la clé
+  // (competition, category, contest_number, paire non ordonnée d'athlètes) puis
+  // validée attribut par attribut (voir wtr-match-reconciliation) — jamais une
+  // fusion de force, jamais une contrainte UNIQUE sur cette clé.
+  async saveMatchRepresentation(input: MatchInput): Promise<MatchSaveResult> {
     const data = {
       competition_id: input.competitionId,
       source_url: input.sourceUrl ?? null,
@@ -180,29 +216,195 @@ export class InternationalRepository {
       result_method: input.resultMethod ?? null,
       result_method_raw: input.resultMethodRaw ?? null,
     };
+    const facts: MatchFacts = {
+      athleteAId: input.athleteAId,
+      athleteBId: input.athleteBId,
+      scoreA: input.scoreA ?? null,
+      scoreB: input.scoreB ?? null,
+      winnerAthleteId: input.winnerAthleteId ?? null,
+      resultMethod: input.resultMethod ?? null,
+      bracketStage: input.bracketStage ?? null,
+    };
 
-    const where = { source_source_external_id: { source: input.source, source_external_id: input.sourceExternalId } };
-    const existing = await this.prisma.competition_match.findUnique({ where, select: { id: true } });
-    if (existing) {
-      await this.prisma.competition_match.update({ where: { id: existing.id }, data });
-      return { matchId: existing.id, created: false };
+    const known = await this.findKnownRepresentation(input.source, input.sourceExternalId);
+    if (known) return this.refreshKnownRepresentation(known, data, facts);
+
+    const representation = {
+      source: input.source,
+      source_external_id: input.sourceExternalId,
+      source_url: input.sourceUrl ?? null,
+    };
+
+    if (hasLogicalKey({ categoryLabel: data.category_label, contestNumber: data.contest_number })) {
+      const candidates = await this.prisma.competition_match.findMany({
+        where: {
+          competition_id: input.competitionId,
+          category_label: data.category_label,
+          contest_number: data.contest_number,
+          OR: [
+            { athlete_a_id: input.athleteAId, athlete_b_id: input.athleteBId },
+            { athlete_a_id: input.athleteBId, athlete_b_id: input.athleteAId },
+          ],
+        },
+        select: {
+          id: true,
+          athlete_a_id: true,
+          athlete_b_id: true,
+          score_a: true,
+          score_b: true,
+          winner_athlete_id: true,
+          result_method: true,
+          bracket_stage: true,
+        },
+        orderBy: [{ created_at: "asc" }, { id: "asc" }],
+      });
+
+      const decision = reconcileMatch(
+        facts,
+        candidates.map((c) => ({
+          matchId: c.id,
+          facts: {
+            athleteAId: c.athlete_a_id,
+            athleteBId: c.athlete_b_id,
+            scoreA: c.score_a,
+            scoreB: c.score_b,
+            winnerAthleteId: c.winner_athlete_id,
+            resultMethod: c.result_method,
+            bracketStage: c.bracket_stage,
+          },
+        })),
+      );
+
+      if (decision.kind === "SAME_LOGICAL_FIGHT") {
+        try {
+          await this.prisma.competition_match_source.create({
+            data: { competition_match_id: decision.matchId, ...representation },
+          });
+        } catch (error) {
+          return this.recoverFromRace(error, input, data, facts);
+        }
+        return { matchId: decision.matchId, created: false, outcome: "attached", differences: [], relatedMatchIds: [] };
+      }
+
+      if (decision.kind === "CONFLICT" || decision.kind === "AMBIGUOUS") {
+        const created = await this.createMatchWithRepresentation(input, data, representation, facts);
+        if ("raced" in created) return created.raced;
+        return decision.kind === "CONFLICT"
+          ? { matchId: created.matchId, created: true, outcome: "conflict", differences: decision.differences, relatedMatchIds: decision.conflictingMatchIds }
+          : { matchId: created.matchId, created: true, outcome: "ambiguous", differences: [], relatedMatchIds: decision.matchIds };
+      }
     }
 
+    const created = await this.createMatchWithRepresentation(input, data, representation, facts);
+    if ("raced" in created) return created.raced;
+    return { matchId: created.matchId, created: true, outcome: "created", differences: [], relatedMatchIds: [] };
+  }
+
+  // competition_match + sa première représentation dans UNE seule écriture
+  // atomique. competition_match.source/source_external_id restent la
+  // représentation retenue à la création (comportement historique inchangé).
+  private async createMatchWithRepresentation(
+    input: MatchInput,
+    data: Omit<Prisma.competition_matchUncheckedCreateInput, "source" | "source_external_id">,
+    representation: { source: string; source_external_id: string; source_url: string | null },
+    facts: MatchFacts,
+  ): Promise<{ matchId: string } | { raced: MatchSaveResult }> {
     try {
       const created = await this.prisma.competition_match.create({
-        data: { ...data, source: input.source, source_external_id: input.sourceExternalId },
+        data: { ...data, ...representation, sources: { create: representation } },
       });
-      return { matchId: created.id, created: true };
+      return { matchId: created.id };
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        const raced = await this.prisma.competition_match.findUnique({ where, select: { id: true } });
-        if (raced) {
-          await this.prisma.competition_match.update({ where: { id: raced.id }, data });
-          return { matchId: raced.id, created: false };
-        }
-      }
-      throw error;
+      return { raced: await this.recoverFromRace(error, input, data, facts) };
     }
+  }
+
+  // Deux exécutions concurrentes de la MÊME représentation : la contrainte
+  // unique (source, source_external_id) reste le filet, on retombe alors sur le
+  // chemin "représentation déjà connue".
+  private async recoverFromRace(
+    error: unknown,
+    input: MatchInput,
+    data: Omit<Prisma.competition_matchUncheckedCreateInput, "source" | "source_external_id">,
+    facts: MatchFacts,
+  ): Promise<MatchSaveResult> {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const raced = await this.findKnownRepresentation(input.source, input.sourceExternalId);
+      if (raced) return this.refreshKnownRepresentation(raced, data, facts);
+    }
+    throw error;
+  }
+
+  private async findKnownRepresentation(source: string, sourceExternalId: string) {
+    const select = {
+      id: true,
+      athlete_a_id: true,
+      athlete_b_id: true,
+      score_a: true,
+      score_b: true,
+      winner_athlete_id: true,
+      result_method: true,
+      bracket_stage: true,
+      _count: { select: { sources: true } },
+    } satisfies Prisma.competition_matchSelect;
+
+    const viaSource = await this.prisma.competition_match_source.findUnique({
+      where: { source_source_external_id: { source, source_external_id: sourceExternalId } },
+      select: { competition_match: { select } },
+    });
+    if (viaSource) return viaSource.competition_match;
+
+    // Ligne antérieure à competition_match_source (représentation principale
+    // sans ligne de provenance) : on la rétablit, elle reste la même identité.
+    const legacy = await this.prisma.competition_match.findUnique({
+      where: { source_source_external_id: { source, source_external_id: sourceExternalId } },
+      select: { ...select, source_url: true },
+    });
+    if (!legacy) return null;
+    await this.prisma.competition_match_source.createMany({
+      data: [{ competition_match_id: legacy.id, source, source_external_id: sourceExternalId, source_url: legacy.source_url }],
+      skipDuplicates: true,
+    });
+    const { source_url: _ignored, ...rest } = legacy;
+    void _ignored;
+    return { ...rest, _count: { sources: Math.max(rest._count.sources, 1) } };
+  }
+
+  // Représentation déjà connue : refresh. Un combat qui n'a QU'UNE représentation
+  // est mis à jour (correction de la source). Un combat qui en a plusieurs n'est
+  // JAMAIS écrasé par une seule d'entre elles si elle diverge : conflit signalé,
+  // données conservées.
+  private async refreshKnownRepresentation(
+    known: {
+      id: string;
+      athlete_a_id: string;
+      athlete_b_id: string;
+      score_a: number | null;
+      score_b: number | null;
+      winner_athlete_id: string | null;
+      result_method: string | null;
+      bracket_stage: string | null;
+      _count: { sources: number };
+    },
+    data: Omit<Prisma.competition_matchUncheckedCreateInput, "source" | "source_external_id">,
+    facts: MatchFacts,
+  ): Promise<MatchSaveResult> {
+    const differences = diffMatchFacts(facts, {
+      athleteAId: known.athlete_a_id,
+      athleteBId: known.athlete_b_id,
+      scoreA: known.score_a,
+      scoreB: known.score_b,
+      winnerAthleteId: known.winner_athlete_id,
+      resultMethod: known.result_method,
+      bracketStage: known.bracket_stage,
+    });
+
+    if (differences.length > 0 && known._count.sources > 1) {
+      return { matchId: known.id, created: false, outcome: "conflict", differences, relatedMatchIds: [known.id] };
+    }
+
+    await this.prisma.competition_match.update({ where: { id: known.id }, data });
+    return { matchId: known.id, created: false, outcome: "refreshed", differences: [], relatedMatchIds: [] };
   }
 
   async findMatchesByAthlete(athleteId: string, page: number, limit: number) {

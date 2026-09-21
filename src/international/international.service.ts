@@ -90,6 +90,11 @@ export function toMatchView(match: MatchWithRelations) {
     scoreB: match.score_b,
     winner: match.winner ? toAthleteSummary(match.winner) : null,
     method: match.result_method,
+    // Représentation retenue à la création (comportement historique inchangé).
     source: { source: match.source, externalId: match.source_external_id, sourceUrl: match.source_url },
+    // TOUTES les représentations source du même combat (WT Results en publie
+    // parfois plusieurs pour un combat réel) : provenance complète, jamais
+    // dupliquée en autant de combats.
+    sources: match.sources.map((s) => ({ source: s.source, externalId: s.source_external_id, sourceUrl: s.source_url })),
   };
 }

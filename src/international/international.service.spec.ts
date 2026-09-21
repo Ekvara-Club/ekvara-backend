@@ -59,6 +59,16 @@ function matchRow(overrides: Partial<MatchWithRelations> = {}): MatchWithRelatio
     athlete_b: { id: "a2", display_name: "Bruno TESTEUR", country_code: "KOR", ...base },
     winner: { id: a, display_name: "Alice EXEMPLE", country_code: "FRA", ...base },
     competition: { id: "c1", nom: "Exemple 2026", date_debut: now, date_fin: null },
+    sources: [
+      {
+        id: "ms1",
+        competition_match_id: "m1",
+        source: "world_taekwondo_results",
+        source_external_id: "match-uuid",
+        source_url: "https://results.worldtaekwondo.org/competitions/x/results/match-uuid",
+        created_at: now,
+      },
+    ],
     ...overrides,
   };
 }
@@ -120,7 +130,29 @@ describe("toMatchView", () => {
         externalId: "match-uuid",
         sourceUrl: "https://results.worldtaekwondo.org/competitions/x/results/match-uuid",
       },
+      sources: [
+        {
+          source: "world_taekwondo_results",
+          externalId: "match-uuid",
+          sourceUrl: "https://results.worldtaekwondo.org/competitions/x/results/match-uuid",
+        },
+      ],
     });
+  });
+
+  it("un combat publié sous plusieurs identifiants source les expose TOUS dans sources (un seul combat, provenance complète)", () => {
+    const rep = (n: number) => ({
+      id: `ms${n}`,
+      competition_match_id: "m1",
+      source: "world_taekwondo_results",
+      source_external_id: `copie-${n}`,
+      source_url: `https://results.worldtaekwondo.org/competitions/x/results/copie-${n}`,
+      created_at: now,
+    });
+
+    const view = toMatchView(matchRow({ sources: [rep(1), rep(2), rep(3), rep(4)] }));
+
+    expect(view.sources.map((s) => s.externalId)).toEqual(["copie-1", "copie-2", "copie-3", "copie-4"]);
   });
 
   it("vainqueur, scores et méthode absents ⇒ null (jamais fabriqués) ; score 0 conservé", () => {

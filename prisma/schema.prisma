@@ -281,10 +281,42 @@ model competition_match {
   created_at DateTime? @default(now()) @db.Timestamp(6)
   updated_at DateTime? @default(now()) @db.Timestamp(6)
 
+  // TOUTES les représentations source du combat (voir competition_match_source).
+  sources competition_match_source[]
+
   @@unique([source, source_external_id])
   @@index([competition_id])
   @@index([athlete_a_id])
   @@index([athlete_b_id])
+}
+
+// Une ligne par REPRÉSENTATION SOURCE d'un combat logique. WT Results publie
+// parfois le même combat réel sous plusieurs identifiants de match (constat :
+// Muju, 4 pages /results/<uuid> strictement identiques par combat) : ils sont
+// tous conservés ici comme provenance, rattachés à UN seul competition_match.
+// competition_match.source/source_external_id restent la représentation
+// retenue à la création (comportement historique inchangé) ; ce tableau contient
+// aussi celle-là, il est donc l'inventaire COMPLET des identifiants connus.
+//
+// Volontairement AUCUN UNIQUE en base sur la clé logique du combat
+// (competition_id, category_label, contest_number, paire non ordonnée) : la
+// stratégie exige de pouvoir CONSERVER un cas conflictuel/ambigu (deux
+// représentations qui partagent cette clé avec des attributs incompatibles)
+// plutôt que de fusionner de force. La clé sert de clé de rapprochement
+// conservatrice dans l'importer, avec détection explicite des conflits.
+model competition_match_source {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  competition_match_id String            @db.Uuid
+  competition_match    competition_match @relation(fields: [competition_match_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  source             String  @db.VarChar(50)
+  source_external_id String  @db.VarChar(255)
+  source_url         String? @db.VarChar(500)
+
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+
+  @@unique([source, source_external_id])
+  @@index([competition_match_id])
 }
 
 model exercise {

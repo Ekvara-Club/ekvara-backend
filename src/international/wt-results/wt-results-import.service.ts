@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { AttachOutcome, CompetitionSourceConflictError, InternationalRepository } from "../international.repository";
+import { AttachOutcome, CompetitionSourceConflictError, InternationalRepository, MatchSaveOutcome } from "../international.repository";
 import { mapResultsCompetition, WtrMappingResult } from "./wtr-competition-matcher";
 import { WorldTaekwondoResultsImporterService, WtrBlockedError, WtrHttpError } from "./wt-results-importer.service";
 import { competitionResultsUrl, matchUrl, profileUrl, WT_RESULTS_SOURCE, WtrMatch } from "./wtr-parser";
@@ -47,8 +47,14 @@ export interface CompetitionImportReport {
   matchesListed: number;
   matchesCapped: number;
   matchesFetched: number;
+  // Nouveaux combats LOGIQUES créés (aucun combat existant partageant la clé).
   matchesCreated: number;
+  // SAME_LOGICAL_FIGHT : identifiant source rattaché à un combat existant.
+  matchesAttached: number;
+  // Représentations déjà connues, revues (refresh).
   matchesUpdated: number;
+  // CONFLICT / AMBIGUOUS : clé partagée mais non fusionné, données conservées.
+  matchesConflicts: number;
   matchesSkippedExisting: number;
   matchesFailed: { matchId: string; reason: string }[];
   notes: string[];
@@ -65,7 +71,7 @@ export interface PilotImportReport {
     reusedExisting: number;
     withoutNoc: number;
   };
-  matches: { withoutWinner: number; withoutScore: number; sourceDuplicates: number };
+  matches: { withoutWinner: number; withoutScore: number; sameLogicalFight: number; conflicts: number; ambiguous: number };
   anomalies: string[];
   profiles: { requested: number; updated: number; failed: { athleteId: string; reason: string }[] };
 }
@@ -94,7 +100,7 @@ export class WtResultsImportService {
       aborted: null,
       competitions: [],
       athletes: { appearances: 0, unique: 0, created: 0, reusedExisting: 0, withoutNoc: 0 },
-      matches: { withoutWinner: 0, withoutScore: 0, sourceDuplicates: 0 },
+      matches: { withoutWinner: 0, withoutScore: 0, sameLogicalFight: 0, conflicts: 0, ambiguous: 0 },
       anomalies: [],
       profiles: { requested: options.profileAthleteIds?.length ?? 0, updated: 0, failed: [] },
     };
@@ -129,7 +135,9 @@ export class WtResultsImportService {
     report.athletes.withoutNoc = tracker.withoutNoc.size;
     report.matches.withoutWinner = tracker.withoutWinner;
     report.matches.withoutScore = tracker.withoutScore;
-    report.matches.sourceDuplicates = tracker.sourceDuplicates;
+    report.matches.sameLogicalFight = tracker.sameLogicalFight;
+    report.matches.conflicts = tracker.conflicts;
+    report.matches.ambiguous = tracker.ambiguous;
     return report;
   }
 
@@ -248,7 +256,9 @@ export class WtResultsImportService {
 
       const outcome = await this.persistMatch(mapping.competitionId, slug, parsed.match, tracker, report);
       if (outcome === "created") result.matchesCreated++;
-      else result.matchesUpdated++;
+      else if (outcome === "attached") result.matchesAttached++;
+      else if (outcome === "refreshed") result.matchesUpdated++;
+      else result.matchesConflicts++;
     }
 
     return;
@@ -260,7 +270,7 @@ export class WtResultsImportService {
     match: WtrMatch,
     tracker: RunTracker,
     report: PilotImportReport,
-  ): Promise<"created" | "updated"> {
+  ): Promise<MatchSaveOutcome> {
     const [a, b] = [match.athleteA, match.athleteB];
     const resolved: string[] = [];
     for (const athlete of [a, b]) {
@@ -284,21 +294,12 @@ export class WtResultsImportService {
     if (match.winner === null) tracker.withoutWinner++;
     if (match.scoreA === null || match.scoreB === null) tracker.withoutScore++;
 
-    // Doublons CÔTÉ SOURCE (constat réel : Muju répète des combats identiques
-    // avec des identifiants de match distincts) : jamais fusionnés — l'identité
-    // reste l'id de match source — mais rapportés.
-    const fingerprint = [slug, match.categoryLabel, match.bracketStage, [a.sourceId, b.sourceId].sort().join("+"), match.scoreA, match.scoreB, match.resultMethod].join("|");
-    const previous = tracker.fingerprints.get(fingerprint);
-    if (previous && previous !== match.sourceMatchId) {
-      tracker.sourceDuplicates++;
-      report.anomalies.push(
-        `[${slug}] match ${match.sourceMatchId}: mêmes athlètes/stade/score/méthode que ${previous} avec un identifiant source distinct — conservé tel quel (doublon côté source probable)`,
-      );
-    } else {
-      tracker.fingerprints.set(fingerprint, match.sourceMatchId);
-    }
-
-    const saved = await this.repository.upsertMatch({
+    // Doublons CÔTÉ SOURCE (constat réel : Muju publie chaque combat sous 4
+    // identifiants de match distincts, pages identiques). Rapprochement
+    // CONSERVATEUR fait par le repository : clé (compétition, catégorie, n° de
+    // combat, paire non ordonnée) puis contrôle attribut par attribut. Tout
+    // identifiant source est conservé ; en cas de conflit rien n'est fusionné.
+    const saved = await this.repository.saveMatchRepresentation({
       competitionId,
       source: WT_RESULTS_SOURCE,
       sourceExternalId: match.sourceMatchId,
@@ -314,7 +315,27 @@ export class WtResultsImportService {
       resultMethod: match.resultMethod,
       resultMethodRaw: match.resultMethodRaw,
     });
-    return saved.created ? "created" : "updated";
+
+    switch (saved.outcome) {
+      case "attached":
+        tracker.sameLogicalFight++;
+        break;
+      case "conflict":
+        tracker.conflicts++;
+        report.anomalies.push(
+          `[${slug}] CONFLICT match ${match.sourceMatchId}: même clé (catégorie, n° de combat, paire d'athlètes) que le combat ${saved.relatedMatchIds.join(", ")} mais ${saved.differences.join(", ")} diverge(nt) — NON fusionné, données conservées`,
+        );
+        break;
+      case "ambiguous":
+        tracker.ambiguous++;
+        report.anomalies.push(
+          `[${slug}] AMBIGUOUS match ${match.sourceMatchId}: cohérent avec plusieurs combats existants (${saved.relatedMatchIds.join(", ")}) — aucun choix arbitraire, représentation conservée séparément`,
+        );
+        break;
+      default:
+        break;
+    }
+    return saved.outcome;
   }
 
   private async enrichProfile(athleteId: string, report: PilotImportReport): Promise<void> {
@@ -356,7 +377,9 @@ function newCompetitionReport(slug: string, options: PilotImportOptions): Compet
     matchesCapped: 0,
     matchesFetched: 0,
     matchesCreated: 0,
+    matchesAttached: 0,
     matchesUpdated: 0,
+    matchesConflicts: 0,
     matchesSkippedExisting: 0,
     matchesFailed: [],
     notes: [],
@@ -366,12 +389,13 @@ function newCompetitionReport(slug: string, options: PilotImportOptions): Compet
 class RunTracker {
   appearances = 0;
   created = 0;
-  sourceDuplicates = 0;
+  sameLogicalFight = 0;
+  conflicts = 0;
+  ambiguous = 0;
   withoutWinner = 0;
   withoutScore = 0;
   readonly uniqueAthletes = new Set<string>();
   readonly withoutNoc = new Set<string>();
-  readonly fingerprints = new Map<string, string>();
 }
 
 function isoDay(d: Date): string {

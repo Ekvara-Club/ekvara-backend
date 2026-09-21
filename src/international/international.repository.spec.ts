@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
-import { CompetitionSourceConflictError, InternationalRepository } from "./international.repository";
+import { CompetitionSourceConflictError, InternationalRepository, MatchSaveResult } from "./international.repository";
 import { forbidTables, modifiedRows, snapshotRows, totalRows } from "./preexisting-rows.snapshot";
 import { WT_RESULTS_SOURCE } from "./wt-results/wtr-parser";
 
@@ -164,7 +164,7 @@ describe("InternationalRepository (intégration Postgres)", () => {
       const competition = await canonicalCompetition("fk");
       const { a, b } = await twoAthletes();
 
-      const { matchId, created } = await repository.upsertMatch({
+      const { matchId, created } = await repository.saveMatchRepresentation({
         competitionId: competition.id,
         source: WT_RESULTS_SOURCE,
         sourceExternalId: ext("match-fk"),
@@ -206,8 +206,8 @@ describe("InternationalRepository (intégration Postgres)", () => {
         athleteBId: b,
       };
 
-      const first = await repository.upsertMatch({ ...base, scoreA: 1, scoreB: 2 });
-      const second = await repository.upsertMatch({ ...base, scoreA: 2, scoreB: 1, winnerAthleteId: a });
+      const first = await repository.saveMatchRepresentation({ ...base, scoreA: 1, scoreB: 2 });
+      const second = await repository.saveMatchRepresentation({ ...base, scoreA: 2, scoreB: 1, winnerAthleteId: a });
 
       expect(first.created).toBe(true);
       expect(second.created).toBe(false);
@@ -262,7 +262,7 @@ describe("InternationalRepository (intégration Postgres)", () => {
     it("tolère les données manquantes : ni score, ni vainqueur, ni méthode, ni catégorie, ni stade", async () => {
       const competition = await canonicalCompetition("sparse");
       const { a, b } = await twoAthletes();
-      const { matchId } = await repository.upsertMatch({
+      const { matchId } = await repository.saveMatchRepresentation({
         competitionId: competition.id,
         source: WT_RESULTS_SOURCE,
         sourceExternalId: ext("sparse"),
@@ -278,7 +278,7 @@ describe("InternationalRepository (intégration Postgres)", () => {
     it("supprimer la competition supprime ses matchs (cascade) sans supprimer les athlètes externes", async () => {
       const competition = await canonicalCompetition("cascade");
       const { a, b } = await twoAthletes();
-      await repository.upsertMatch({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext("cascade"), athleteAId: a, athleteBId: b });
+      await repository.saveMatchRepresentation({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext("cascade"), athleteAId: a, athleteBId: b });
 
       await prisma.competition.delete({ where: { id: competition.id } });
       competitionIds.length = 0;
@@ -290,8 +290,232 @@ describe("InternationalRepository (intégration Postgres)", () => {
     it("un athlète externe référencé par un match ne peut pas être supprimé (FK sans cascade)", async () => {
       const competition = await canonicalCompetition("restrict");
       const { a, b } = await twoAthletes();
-      await repository.upsertMatch({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext("restrict"), athleteAId: a, athleteBId: b });
+      await repository.saveMatchRepresentation({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext("restrict"), athleteAId: a, athleteBId: b });
       await expect(prisma.external_athlete.delete({ where: { id: a } })).rejects.toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    });
+
+    // --- Ticket #12B : représentations source et rapprochement conservateur ---------
+
+    const keyed = (competitionId: string, id: string, a: string, b: string, overrides: Record<string, unknown> = {}) => ({
+      competitionId,
+      source: WT_RESULTS_SOURCE,
+      sourceExternalId: ext(id),
+      sourceUrl: `https://results.worldtaekwondo.org/x/${ext(id)}`,
+      categoryLabel: "Men -68kg",
+      bracketStage: "R32",
+      contestNumber: 101,
+      athleteAId: a,
+      athleteBId: b,
+      scoreA: 0,
+      scoreB: 2,
+      winnerAthleteId: b,
+      resultMethod: "PTF",
+      ...overrides,
+    });
+
+    it("SAME_LOGICAL_FIGHT : 4 représentations identiques ⇒ 1 competition_match + 4 competition_match_source, rien de créé pour les copies", async () => {
+      const competition = await canonicalCompetition("same4");
+      const { a, b } = await twoAthletes();
+
+      const results: MatchSaveResult[] = [];
+      for (const label of ["c1", "c2", "c3", "c4"]) {
+        results.push(await repository.saveMatchRepresentation(keyed(competition.id, label, a, b)));
+      }
+
+      expect(results.map((r) => r.outcome)).toEqual(["created", "attached", "attached", "attached"]);
+      expect(results.map((r) => r.created)).toEqual([true, false, false, false]);
+      expect(new Set(results.map((r) => r.matchId)).size).toBe(1);
+      expect(await prisma.competition_match.count({ where: { competition_id: competition.id } })).toBe(1);
+      const sources = await prisma.competition_match_source.findMany({ where: { competition_match_id: results[0].matchId } });
+      expect(sources.map((s) => s.source_external_id).sort()).toEqual(["c1", "c2", "c3", "c4"].map(ext).sort());
+      // Les copies ne modifient PAS les données du combat retenu.
+      const stored = await prisma.competition_match.findUniqueOrThrow({ where: { id: results[0].matchId } });
+      expect(stored.source_external_id).toBe(ext("c1"));
+    });
+
+    it("le rapprochement ignore l'ordre des athlètes dans la clé (paire NON ordonnée) mais pas l'orientation : inversée ⇒ CONFLICT", async () => {
+      const competition = await canonicalCompetition("swap");
+      const { a, b } = await twoAthletes();
+      await repository.saveMatchRepresentation(keyed(competition.id, "orig", a, b));
+
+      const swapped = await repository.saveMatchRepresentation(
+        keyed(competition.id, "swapped", b, a, { scoreA: 2, scoreB: 0, winnerAthleteId: b }),
+      );
+
+      expect(swapped.outcome).toBe("conflict");
+      expect(swapped.differences).toContain("orientation");
+      expect(swapped.created).toBe(true);
+      expect(await prisma.competition_match.count({ where: { competition_id: competition.id } })).toBe(2);
+    });
+
+    it("CONFLICT : attribut critique divergent ⇒ nouveau combat conservé, l'existant intact, différences et ids liés rapportés", async () => {
+      const competition = await canonicalCompetition("conflict");
+      const { a, b } = await twoAthletes();
+      const first = await repository.saveMatchRepresentation(keyed(competition.id, "orig", a, b));
+
+      const conflict = await repository.saveMatchRepresentation(keyed(competition.id, "diff", a, b, { scoreA: 1, resultMethod: "PTG" }));
+
+      expect(conflict).toMatchObject({ outcome: "conflict", created: true, relatedMatchIds: [first.matchId] });
+      expect(conflict.differences.sort()).toEqual(["method", "scoreA"]);
+      const original = await prisma.competition_match.findUniqueOrThrow({ where: { id: first.matchId }, include: { sources: true } });
+      expect([original.score_a, original.result_method]).toEqual([0, "PTF"]);
+      expect(original.sources).toHaveLength(1);
+    });
+
+    it("AMBIGUOUS : plusieurs combats existants cohérents ⇒ aucun choix arbitraire, représentation conservée à part", async () => {
+      const competition = await canonicalCompetition("ambiguous");
+      const { a, b } = await twoAthletes();
+      // Deux combats déjà identiques non fusionnés (état hérité d'avant le rapprochement).
+      const base = { competition_id: competition.id, category_label: "Men -68kg", bracket_stage: "R32", contest_number: 101, athlete_a_id: a, athlete_b_id: b, score_a: 0, score_b: 2, winner_athlete_id: b, result_method: "PTF" };
+      const [m1, m2] = await Promise.all(
+        ["x1", "x2"].map((label) =>
+          prisma.competition_match.create({
+            data: { ...base, source: WT_RESULTS_SOURCE, source_external_id: ext(label), sources: { create: { source: WT_RESULTS_SOURCE, source_external_id: ext(label) } } },
+          }),
+        ),
+      );
+
+      const result = await repository.saveMatchRepresentation(keyed(competition.id, "incoming", a, b));
+
+      expect(result.outcome).toBe("ambiguous");
+      expect(result.created).toBe(true);
+      expect(result.relatedMatchIds.sort()).toEqual([m1.id, m2.id].sort());
+      expect(await prisma.competition_match.count({ where: { competition_id: competition.id } })).toBe(3);
+    });
+
+    it("clé indéterminée (catégorie ou n° de combat NULL) ⇒ jamais de rapprochement ; n° 0 est un numéro valide", async () => {
+      const competition = await canonicalCompetition("nokey");
+      const { a, b } = await twoAthletes();
+
+      const noCategory = [
+        await repository.saveMatchRepresentation(keyed(competition.id, "n1", a, b, { categoryLabel: null })),
+        await repository.saveMatchRepresentation(keyed(competition.id, "n2", a, b, { categoryLabel: null })),
+      ];
+      const noContest = [
+        await repository.saveMatchRepresentation(keyed(competition.id, "k1", a, b, { contestNumber: null })),
+        await repository.saveMatchRepresentation(keyed(competition.id, "k2", a, b, { contestNumber: null })),
+      ];
+      expect([...noCategory, ...noContest].map((r) => r.outcome)).toEqual(["created", "created", "created", "created"]);
+
+      const zero = [
+        await repository.saveMatchRepresentation(keyed(competition.id, "z1", a, b, { contestNumber: 0 })),
+        await repository.saveMatchRepresentation(keyed(competition.id, "z2", a, b, { contestNumber: 0 })),
+      ];
+      expect(zero.map((r) => r.outcome)).toEqual(["created", "attached"]);
+    });
+
+    it("clé différente ⇒ combats distincts (autre compétition, autre catégorie, autre n°, autre paire)", async () => {
+      const competition = await canonicalCompetition("distinct-1");
+      const other = await canonicalCompetition("distinct-2");
+      const { a, b } = await twoAthletes();
+      const c = (await athlete(`d-c-${Math.random().toString(36).slice(2, 6)}`)).athleteId;
+      await repository.saveMatchRepresentation(keyed(competition.id, "base", a, b));
+
+      const outcomes = [
+        (await repository.saveMatchRepresentation(keyed(other.id, "o1", a, b))).outcome,
+        (await repository.saveMatchRepresentation(keyed(competition.id, "o2", a, b, { categoryLabel: "Men -80kg" }))).outcome,
+        (await repository.saveMatchRepresentation(keyed(competition.id, "o3", a, b, { contestNumber: 102 }))).outcome,
+        (await repository.saveMatchRepresentation(keyed(competition.id, "o4", a, c))).outcome,
+      ];
+
+      expect(outcomes).toEqual(["created", "created", "created", "created"]);
+    });
+
+    it("représentation déjà connue ⇒ refreshed, aucune ligne créée ; sur un combat à une seule représentation, la source peut le corriger", async () => {
+      const competition = await canonicalCompetition("refresh-single");
+      const { a, b } = await twoAthletes();
+      const first = await repository.saveMatchRepresentation(keyed(competition.id, "r1", a, b));
+
+      const again = await repository.saveMatchRepresentation(keyed(competition.id, "r1", a, b, { scoreA: 1, scoreB: 2 }));
+
+      expect(again).toMatchObject({ outcome: "refreshed", created: false, matchId: first.matchId });
+      const stored = await prisma.competition_match.findUniqueOrThrow({ where: { id: first.matchId } });
+      expect([stored.score_a, stored.score_b]).toEqual([1, 2]);
+    });
+
+    it("refresh DIVERGENT d'une représentation d'un combat à plusieurs représentations ⇒ conflict, le combat n'est pas écrasé", async () => {
+      const competition = await canonicalCompetition("refresh-multi");
+      const { a, b } = await twoAthletes();
+      const first = await repository.saveMatchRepresentation(keyed(competition.id, "m1", a, b));
+      await repository.saveMatchRepresentation(keyed(competition.id, "m2", a, b));
+
+      const diverging = await repository.saveMatchRepresentation(keyed(competition.id, "m2", a, b, { scoreA: 2, scoreB: 0, winnerAthleteId: a }));
+
+      expect(diverging).toMatchObject({ outcome: "conflict", created: false, matchId: first.matchId });
+      expect(diverging.differences).toEqual(expect.arrayContaining(["scoreA", "scoreB", "winner"]));
+      const stored = await prisma.competition_match.findUniqueOrThrow({ where: { id: first.matchId } });
+      expect([stored.score_a, stored.score_b, stored.winner_athlete_id]).toEqual([0, 2, b]);
+    });
+
+    it("idempotence : rejouer toutes les représentations ne change ni le nombre de combats ni celui des représentations", async () => {
+      const competition = await canonicalCompetition("replay");
+      const { a, b } = await twoAthletes();
+      const labels = ["p1", "p2", "p3"];
+      for (const label of labels) await repository.saveMatchRepresentation(keyed(competition.id, label, a, b));
+      const snapshot = async () => ({
+        matches: await prisma.competition_match.count({ where: { competition_id: competition.id } }),
+        sources: await prisma.competition_match_source.count({ where: { competition_match: { competition_id: competition.id } } }),
+      });
+      const before = await snapshot();
+
+      const replay: string[] = [];
+      for (const label of labels) replay.push((await repository.saveMatchRepresentation(keyed(competition.id, label, a, b))).outcome);
+
+      expect(replay).toEqual(["refreshed", "refreshed", "refreshed"]);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("course concurrente sur la MÊME représentation ⇒ une seule ligne de provenance, aucune erreur", async () => {
+      const competition = await canonicalCompetition("race");
+      const { a, b } = await twoAthletes();
+
+      const results = await Promise.all([1, 2, 3].map(() => repository.saveMatchRepresentation(keyed(competition.id, "race", a, b))));
+
+      expect(new Set(results.map((r) => r.matchId)).size).toBe(1);
+      expect(await prisma.competition_match.count({ where: { competition_id: competition.id } })).toBe(1);
+      expect(await prisma.competition_match_source.count({ where: { source_external_id: ext("race") } })).toBe(1);
+    });
+
+    it("ligne héritée : un competition_match sans ligne de provenance est reconnu et sa provenance rétablie (pas de doublon)", async () => {
+      const competition = await canonicalCompetition("legacy");
+      const { a, b } = await twoAthletes();
+      await prisma.competition_match.create({
+        data: { competition_id: competition.id, source: WT_RESULTS_SOURCE, source_external_id: ext("legacy"), category_label: "Men -68kg", contest_number: 101, athlete_a_id: a, athlete_b_id: b },
+      });
+
+      const result = await repository.saveMatchRepresentation(keyed(competition.id, "legacy", a, b));
+
+      expect(result.outcome).toBe("refreshed");
+      expect(await prisma.competition_match.count({ where: { competition_id: competition.id } })).toBe(1);
+      expect(await prisma.competition_match_source.count({ where: { source_external_id: ext("legacy") } })).toBe(1);
+    });
+
+    it("competition_match_source : unique (source, source_external_id) appliqué par Postgres ; cascade avec le combat ; findExistingMatchIds voit aussi les représentations rattachées", async () => {
+      const competition = await canonicalCompetition("source-table");
+      const { a, b } = await twoAthletes();
+      const first = await repository.saveMatchRepresentation(keyed(competition.id, "s1", a, b));
+      await repository.saveMatchRepresentation(keyed(competition.id, "s2", a, b)); // rattachée, jamais représentation principale
+
+      await expect(
+        prisma.competition_match_source.create({ data: { competition_match_id: first.matchId, source: WT_RESULTS_SOURCE, source_external_id: ext("s2") } }),
+      ).rejects.toMatchObject({ code: "P2002" });
+
+      const known = await repository.findExistingMatchIds(WT_RESULTS_SOURCE, [ext("s1"), ext("s2"), ext("absent")]);
+      expect([...known].sort()).toEqual([ext("s1"), ext("s2")].sort());
+
+      await prisma.competition_match.delete({ where: { id: first.matchId } });
+      expect(await prisma.competition_match_source.count({ where: { source_external_id: { in: [ext("s1"), ext("s2")] } } })).toBe(0);
+    });
+
+    it("le combat expose TOUTES ses représentations dans la lecture paginée (une ligne par combat, pas par représentation)", async () => {
+      const competition = await canonicalCompetition("read-sources");
+      const { a, b } = await twoAthletes();
+      for (const label of ["v1", "v2", "v3", "v4"]) await repository.saveMatchRepresentation(keyed(competition.id, label, a, b));
+
+      const page = await repository.findMatchesByCompetition(competition.id, 1, 20);
+
+      expect(page.total).toBe(1);
+      expect(page.items[0].sources.map((s) => s.source_external_id)).toEqual(["v1", "v2", "v3", "v4"].map(ext));
     });
 
     it("findExistingMatchIds / pagination par athlète et par compétition (contest_number croissant, NULL en dernier)", async () => {
@@ -299,7 +523,7 @@ describe("InternationalRepository (intégration Postgres)", () => {
       const { a, b } = await twoAthletes();
       const c = (await athlete(`list-c-${Math.random().toString(36).slice(2, 6)}`)).athleteId;
       const mk = (label: string, contest: number | null, x: string, y: string) =>
-        repository.upsertMatch({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext(label), contestNumber: contest, athleteAId: x, athleteBId: y });
+        repository.saveMatchRepresentation({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext(label), contestNumber: contest, athleteAId: x, athleteBId: y });
       await mk("l3", null, a, b);
       await mk("l2", 20, b, a);
       await mk("l1", 10, a, c);
@@ -404,7 +628,7 @@ describe("InternationalRepository (intégration Postgres)", () => {
       });
       const a = (await guarded.upsertAthleteFromSource({ source: WT_RESULTS_SOURCE, sourceExternalId: ext("ni-a"), displayName: "NI A" })).athleteId;
       const b = (await guarded.upsertAthleteFromSource({ source: WT_RESULTS_SOURCE, sourceExternalId: ext("ni-b"), displayName: "NI B" })).athleteId;
-      await guarded.upsertMatch({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext("ni-m"), athleteAId: a, athleteBId: b });
+      await guarded.saveMatchRepresentation({ competitionId: competition.id, source: WT_RESULTS_SOURCE, sourceExternalId: ext("ni-m"), athleteAId: a, athleteBId: b });
       await guarded.findMatchesByCompetition(competition.id, 1, 10);
       await guarded.findCalendarCandidates(competition.date_debut);
 
