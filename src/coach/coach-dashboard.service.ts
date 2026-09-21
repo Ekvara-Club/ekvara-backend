@@ -2,12 +2,14 @@ import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/commo
 import { compareMeasurements } from "../metrics/metrics.service";
 import { computeWeightSummary, REFERENCE_WINDOW_MS, WeightSummaryView } from "../weights/weights.service";
 import { computeGoalProgress } from "../goals/goals.service";
+import { selectNextCompetition, todayUtcMidnight } from "../competitions/next-competition";
 import { daysUntil } from "./dashboard-date.util";
 import { CoachRepository } from "./coach.repository";
 import { CoachGroupsRepository } from "./coach-groups.repository";
 import {
   BatchGoal,
   BatchParticipation,
+  BatchUpcomingPreparation,
   CoachDashboardRepository,
 } from "./coach-dashboard.repository";
 
@@ -20,6 +22,18 @@ export interface AthleteGroupRef {
   name: string;
 }
 
+// Préparation de CE coach pour la compétition (jamais celle d'un autre coach,
+// jamais la note privée). Sur une participation, sert d'enrichissement.
+export interface NextCompetitionPreparationView {
+  status: string;
+  targetAgeCategory: string | null;
+  targetWeightCategory: string | null;
+}
+
+// `weightCategory`/`ageCategory` = catégories OFFICIELLES de la participation
+// (null pour une compétition seulement préparée) ; les catégories PRÉVUES du
+// coach vivent dans `preparation` : jamais mélangées, l'officiel n'est jamais
+// falsifié par le prévu.
 export interface NextCompetitionView {
   id: string;
   name: string;
@@ -28,6 +42,9 @@ export interface NextCompetitionView {
   country: string | null;
   level: string | null;
   weightCategory: string | null;
+  ageCategory: string | null;
+  source: "participation" | "coach_preparation";
+  preparation: NextCompetitionPreparationView | null;
   daysUntil: number;
 }
 
@@ -286,6 +303,11 @@ export class CoachDashboardService {
     if (roster.length === 0) return [];
     const athleteIds = roster.map((a) => a.id);
 
+    // "À venir" = à partir de minuit UTC du jour courant (competition.date_debut
+    // est un DATE) : même définition que la vue Athlete, appliquée aux
+    // participations ET aux préparations.
+    const fromDate = todayUtcMidnight(now);
+
     const [
       groupLinks,
       weightLogs,
@@ -293,6 +315,8 @@ export class CoachDashboardService {
       metricTypes,
       measurements,
       upcomingParticipations,
+      upcomingParticipationLinks,
+      upcomingPreparations,
       upcomingTrainings,
       activeGoals,
     ] = await Promise.all([
@@ -301,7 +325,11 @@ export class CoachDashboardService {
       this.dashboardRepository.findActiveWeightTargetsForAthletes(athleteIds),
       this.dashboardRepository.findAllMetricTypes(),
       this.dashboardRepository.findMeasurementsForAthletes(athleteIds),
-      this.dashboardRepository.findUpcomingParticipationsForAthletes(athleteIds, now),
+      this.dashboardRepository.findUpcomingParticipationsForAthletes(athleteIds, fromDate),
+      this.dashboardRepository.findUpcomingParticipationLinksForAthletes(athleteIds, fromDate),
+      // Préparations de CE coach uniquement (coachId dans le filtre) : jamais
+      // celles d'un autre coach du même athlète.
+      this.dashboardRepository.findUpcomingPreparationsForAthletes(athleteIds, coachId, fromDate),
       this.dashboardRepository.findUpcomingTrainingsForAthletes(athleteIds, now),
       this.dashboardRepository.findActiveGoalsForAthletes(athleteIds),
     ]);
@@ -311,6 +339,8 @@ export class CoachDashboardService {
     const targetByAthlete = firstByGroup(weightTargets, (t) => t.athlete_id);
     const measurementsByAthlete = groupBy(measurements, (m) => m.athlete_id);
     const upcomingParticipationsByAthlete = groupBy(upcomingParticipations, (p) => p.athlete_id);
+    const participationLinksByAthlete = groupBy(upcomingParticipationLinks, (l) => l.athlete_id);
+    const upcomingPreparationsByAthlete = groupBy(upcomingPreparations, (p) => p.athlete_id);
     const nextTrainingByAthlete = firstByGroup(upcomingTrainings, (t) => t.athlete_id);
     const primaryGoalByAthlete = firstByGroup(activeGoals, (g) => g.athlete_id);
 
@@ -327,8 +357,26 @@ export class CoachDashboardService {
       const athleteMeasurements = measurementsByAthlete.get(base.id) ?? [];
       const { progression, hasAnyMeasurement } = buildProgression(metricTypes, athleteMeasurements);
 
-      const participations = upcomingParticipationsByAthlete.get(base.id) ?? [];
-      const nextCompetition = participations[0] ? toNextCompetitionView(participations[0], now) : null;
+      // Règle "prochaine compétition" UNIQUE, partagée avec la vue Athlete
+      // (competitions/next-competition.ts) : participations actives +
+      // préparations de ce coach, dédupliquées par compétition.
+      const choice = selectNextCompetition<BatchParticipation, BatchUpcomingPreparation>({
+        activeParticipations: (upcomingParticipationsByAthlete.get(base.id) ?? []).map((p) => ({
+          competitionId: p.competition.id,
+          startDate: p.competition.date_debut,
+          value: p,
+        })),
+        preparations: (upcomingPreparationsByAthlete.get(base.id) ?? []).map((p) => ({
+          competitionId: p.competition_id,
+          startDate: p.competition.date_debut,
+          status: p.statut,
+          value: p,
+        })),
+        competitionIdsWithParticipation: new Set(
+          (participationLinksByAthlete.get(base.id) ?? []).map((link) => link.competition_id),
+        ),
+      });
+      const nextCompetition = choice ? toNextCompetitionView(choice, now) : null;
 
       const nextTrainingRow = nextTrainingByAthlete.get(base.id);
       const nextTraining = nextTrainingRow ? toNextTrainingView(nextTrainingRow) : null;
@@ -462,16 +510,49 @@ function buildProgression(
   };
 }
 
-function toNextCompetitionView(participation: BatchParticipation, now: Date): NextCompetitionView {
+function toPreparationView(preparation: BatchUpcomingPreparation): NextCompetitionPreparationView {
   return {
-    id: participation.competition.id,
-    name: participation.competition.nom,
-    startDate: participation.competition.date_debut,
-    city: participation.competition.ville,
-    country: participation.competition.pays,
-    level: participation.competition.niveau,
-    weightCategory: participation.categorie_poids,
-    daysUntil: daysUntil(participation.competition.date_debut, now),
+    status: preparation.statut,
+    targetAgeCategory: preparation.categorie_age_prevue,
+    targetWeightCategory: preparation.categorie_poids_prevue,
+  };
+}
+
+function toNextCompetitionView(
+  choice: NonNullable<ReturnType<typeof selectNextCompetition<BatchParticipation, BatchUpcomingPreparation>>>,
+  now: Date,
+): NextCompetitionView {
+  if (choice.source === "participation") {
+    const { participation, preparation } = choice;
+    return {
+      id: participation.competition.id,
+      name: participation.competition.nom,
+      startDate: participation.competition.date_debut,
+      city: participation.competition.ville,
+      country: participation.competition.pays,
+      level: participation.competition.niveau,
+      weightCategory: participation.categorie_poids,
+      ageCategory: participation.categorie_age,
+      source: "participation",
+      preparation: preparation ? toPreparationView(preparation) : null,
+      daysUntil: daysUntil(participation.competition.date_debut, now),
+    };
+  }
+
+  const { competition } = choice.preparation;
+  return {
+    id: competition.id,
+    name: competition.nom,
+    startDate: competition.date_debut,
+    city: competition.ville,
+    country: competition.pays,
+    level: competition.niveau,
+    // Aucune participation : pas de catégorie officielle (jamais déduite du prévu).
+    weightCategory: null,
+    ageCategory: null,
+    source: "coach_preparation",
+    preparation: toPreparationView(choice.preparation),
+    daysUntil: daysUntil(competition.date_debut, now),
   };
 }
 

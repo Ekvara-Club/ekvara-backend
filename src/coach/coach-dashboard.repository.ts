@@ -20,6 +20,24 @@ const BATCH_GOAL_SELECT = {
   athlete_id: true,
 } satisfies Prisma.athlete_goalSelect;
 
+// Projection Athlete/Coach minimale d'une préparation pour "prochaine
+// compétition" : liste blanche explicite. note_coach et objectif n'y figurent
+// volontairement pas (jamais lus ici, donc jamais exposables par ce chemin).
+const BATCH_UPCOMING_PREPARATION_SELECT = {
+  athlete_id: true,
+  competition_id: true,
+  statut: true,
+  categorie_age_prevue: true,
+  categorie_poids_prevue: true,
+  competition: {
+    select: { id: true, nom: true, date_debut: true, ville: true, pays: true, niveau: true },
+  },
+} satisfies Prisma.coach_competition_preparationSelect;
+
+export type BatchUpcomingPreparation = Prisma.coach_competition_preparationGetPayload<{
+  select: typeof BATCH_UPCOMING_PREPARATION_SELECT;
+}>;
+
 export type BatchParticipation = Prisma.participationGetPayload<{ select: typeof BATCH_PARTICIPATION_SELECT }>;
 export type BatchGoal = Prisma.athlete_goalGetPayload<{ select: typeof BATCH_GOAL_SELECT }>;
 
@@ -106,6 +124,41 @@ export class CoachDashboardRepository {
       },
       select: BATCH_PARTICIPATION_SELECT,
       orderBy: [{ athlete_id: "asc" }, { competition: { date_debut: "asc" } }],
+    });
+  }
+
+  // Compétitions à venir où l'athlète a une participation, QUEL QUE SOIT son
+  // statut (annulée/retirée comprises) : sert uniquement à ne jamais présenter
+  // comme "préparée par le coach" une compétition déjà portée par une
+  // participation (voir selectNextCompetition). Même filtre de date que
+  // findUpcomingParticipationsForAthletes, une seule définition d'"à venir".
+  findUpcomingParticipationLinksForAthletes(
+    athleteIds: string[],
+    fromDate: Date,
+  ): Promise<{ athlete_id: string; competition_id: string }[]> {
+    return this.prisma.participation.findMany({
+      where: { athlete_id: { in: athleteIds }, competition: { date_debut: { gte: fromDate } } },
+      select: { athlete_id: true, competition_id: true },
+    });
+  }
+
+  // Préparations à venir de CE coach uniquement (coach_id fait partie du
+  // filtre, jamais seulement athlete_id) : une préparation d'un autre coach du
+  // même athlète n'est ni lue ni exposable ici. Batch, jamais une requête par
+  // athlète.
+  findUpcomingPreparationsForAthletes(
+    athleteIds: string[],
+    coachId: string,
+    fromDate: Date,
+  ): Promise<BatchUpcomingPreparation[]> {
+    return this.prisma.coach_competition_preparation.findMany({
+      where: {
+        coach_id: coachId,
+        athlete_id: { in: athleteIds },
+        competition: { date_debut: { gte: fromDate } },
+      },
+      select: BATCH_UPCOMING_PREPARATION_SELECT,
+      orderBy: [{ athlete_id: "asc" }, { competition: { date_debut: "asc" } }, { created_at: "asc" }],
     });
   }
 

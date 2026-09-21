@@ -1,4 +1,5 @@
-import { isActivePreparation, resolveCoachPreparations } from "./athlete-coach-preparations";
+import { isActivePreparationStatus } from "../competitions/next-competition";
+import { resolveCoachPreparations } from "./athlete-coach-preparations";
 import type { AthletePreparationRow } from "./participations.repository";
 
 function competitionRow(id: string, nom: string, dateDebut: string): AthletePreparationRow["competition"] {
@@ -121,7 +122,7 @@ describe("resolveCoachPreparations", () => {
 
     expect(view.status).toBe("selectionne");
     expect(view.categoriePoidsPrevue).toBe("-68kg");
-    expect(isActivePreparation(view)).toBe(true);
+    expect(isActivePreparationStatus(view.status)).toBe(true);
   });
 
   it("forfait de tous les coachs -> statut forfait, non active", () => {
@@ -131,7 +132,7 @@ describe("resolveCoachPreparations", () => {
     ]);
 
     expect(view.status).toBe("forfait");
-    expect(isActivePreparation(view)).toBe(false);
+    expect(isActivePreparationStatus(view.status)).toBe(false);
   });
 
   it("plusieurs compétitions -> triées par date de début croissante", () => {

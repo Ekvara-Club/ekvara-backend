@@ -10,10 +10,10 @@ import { CompetitionsRepository } from "../competitions/competitions.repository"
 import { CreateParticipationDto } from "./dto/create-participation.dto";
 import { UpdateParticipationResultDto } from "./dto/update-participation-result.dto";
 import { ParticipationsRepository, ParticipationWithCompetition } from "./participations.repository";
+import { selectNextCompetition, todayUtcMidnight } from "../competitions/next-competition";
 import {
   AthleteCoachPreparationSummary,
   AthleteCoachPreparationView,
-  isActivePreparation,
   resolveCoachPreparations,
   toPreparationSummary,
 } from "./athlete-coach-preparations";
@@ -72,46 +72,55 @@ export class ParticipationsService {
     return resolveCoachPreparations(rows);
   }
 
-  // "Prochaine compétition" = la plus proche parmi (A) la prochaine
-  // participation active et (B) les préparations coach actives (non forfait)
-  // de compétitions futures qui n'ont AUCUNE participation. Une compétition
-  // présente dans les deux n'apparaît qu'une fois, portée par la
-  // participation (source métier de l'inscription/du résultat), simplement
-  // enrichie de la préparation. À date égale, la participation prime.
+  // "Prochaine compétition" : la règle vit dans selectNextCompetition
+  // (competitions/next-competition.ts), PARTAGÉE avec la vue Coach — ici on ne
+  // fait que fournir les candidats de l'athlète (préparations athlete-safe,
+  // tous coachs confondus) et mapper le résultat vers le DTO Athlete.
   async findNextForAthlete(athleteId: string) {
     await this.assertAthleteExists(athleteId);
 
-    // competition.date_debut est un DATE (sans heure) : on compare à minuit UTC du
-    // jour courant pour qu'une compétition ayant lieu aujourd'hui reste éligible,
-    // au lieu de disparaître à cause de l'heure courante.
-    const now = new Date();
-    const todayUtcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const fromDate = todayUtcMidnight();
 
     const [nextParticipation, preparationRows] = await Promise.all([
-      this.participationsRepository.findNextByAthlete(athleteId, todayUtcMidnight),
-      this.participationsRepository.findCoachPreparationsByAthlete(athleteId, todayUtcMidnight),
+      this.participationsRepository.findNextByAthlete(athleteId, fromDate),
+      this.participationsRepository.findCoachPreparationsByAthlete(athleteId, fromDate),
     ]);
 
-    const activePreparations = resolveCoachPreparations(preparationRows).filter(isActivePreparation);
+    const preparations = resolveCoachPreparations(preparationRows);
 
-    let preparationOnly: AthleteCoachPreparationView | null = null;
-    if (activePreparations.length > 0) {
-      const withParticipation = new Set(
-        await this.participationsRepository.findParticipationCompetitionIds(
-          athleteId,
-          activePreparations.map((p) => p.competitionId),
-        ),
-      );
-      // activePreparations est déjà trié par date de début croissante.
-      preparationOnly = activePreparations.find((p) => !withParticipation.has(p.competitionId)) ?? null;
-    }
+    // Uniquement utile pour départager les préparations : inutile s'il n'y en a aucune.
+    const competitionIdsWithParticipation = new Set(
+      preparations.length > 0
+        ? await this.participationsRepository.findParticipationCompetitionIds(
+            athleteId,
+            preparations.map((p) => p.competitionId),
+          )
+        : [],
+    );
 
-    if (nextParticipation && (!preparationOnly || nextParticipation.competition.date_debut <= preparationOnly.competition.dateDebut)) {
-      const enrichment = activePreparations.find((p) => p.competitionId === nextParticipation.competition.id);
-      return toNextParticipationView(nextParticipation, enrichment ? toPreparationSummary(enrichment) : null);
-    }
+    const choice = selectNextCompetition({
+      activeParticipations: nextParticipation
+        ? [
+            {
+              competitionId: nextParticipation.competition.id,
+              startDate: nextParticipation.competition.date_debut,
+              value: nextParticipation,
+            },
+          ]
+        : [],
+      preparations: preparations.map((p) => ({
+        competitionId: p.competitionId,
+        startDate: p.competition.dateDebut,
+        status: p.status,
+        value: p,
+      })),
+      competitionIdsWithParticipation,
+    });
 
-    return preparationOnly ? toNextPreparationView(preparationOnly) : null;
+    if (!choice) return null;
+    return choice.source === "participation"
+      ? toNextParticipationView(choice.participation, choice.preparation ? toPreparationSummary(choice.preparation) : null)
+      : toNextPreparationView(choice.preparation);
   }
 
   async updateResult(athleteId: string, competitionId: string, dto: UpdateParticipationResultDto) {

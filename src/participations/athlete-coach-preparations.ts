@@ -1,4 +1,5 @@
 import type { AthletePreparationRow } from "./participations.repository";
+import { isActivePreparationStatus } from "../competitions/next-competition";
 import { toCompetitionView } from "./participation-views";
 
 // Vue Athlete-safe d'une coach_competition_preparation. Volontairement AUCUN
@@ -24,20 +25,11 @@ export interface AthleteCoachPreparationSummary {
   categoriePoidsPrevue: string | null;
 }
 
-// Statut interne de préparation coach (voir PREPARATION_STATUSES côté coach) :
-// "forfait" = l'athlète ne participera pas. Même famille que
-// INACTIVE_PARTICIPATION_STATUSES : jamais présenté comme échéance active.
-export const FORFAIT_PREPARATION_STATUS = "forfait";
-
 // Progression de la préparation, utilisée UNIQUEMENT pour départager
 // déterministiquement deux coachs qui préparent le même athlète pour la même
 // compétition avec des statuts différents : le plus avancé l'emporte. Un
 // statut inconnu (varchar libre en base) vaut 0 — jamais promu par hasard.
 const PREPARATION_STATUS_RANK: Record<string, number> = { envisage: 1, selectionne: 2, pret: 3 };
-
-export function isActivePreparation(view: Pick<AthleteCoachPreparationView, "status">): boolean {
-  return view.status !== FORFAIT_PREPARATION_STATUS;
-}
 
 function rankOf(status: string): number {
   return PREPARATION_STATUS_RANK[status] ?? 0;
@@ -66,7 +58,7 @@ export function resolveCoachPreparations(rows: AthletePreparationRow[]): Athlete
 
   const views: AthleteCoachPreparationView[] = [];
   for (const group of byCompetition.values()) {
-    const active = group.filter((row) => row.statut !== FORFAIT_PREPARATION_STATUS);
+    const active = group.filter((row) => isActivePreparationStatus(row.statut));
     const pool = active.length > 0 ? active : group;
 
     const status = [...pool].map((row) => row.statut).sort((a, b) => rankOf(b) - rankOf(a) || a.localeCompare(b))[0];

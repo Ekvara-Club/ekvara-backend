@@ -18,6 +18,8 @@ describe("CoachDashboardService", () => {
     findAllMetricTypes: jest.Mock;
     findMeasurementsForAthletes: jest.Mock;
     findUpcomingParticipationsForAthletes: jest.Mock;
+    findUpcomingParticipationLinksForAthletes: jest.Mock;
+    findUpcomingPreparationsForAthletes: jest.Mock;
     findUpcomingTrainingsForAthletes: jest.Mock;
     findActiveGoalsForAthletes: jest.Mock;
   };
@@ -48,6 +50,8 @@ describe("CoachDashboardService", () => {
       findAllMetricTypes: jest.fn().mockResolvedValue([]),
       findMeasurementsForAthletes: jest.fn().mockResolvedValue([]),
       findUpcomingParticipationsForAthletes: jest.fn().mockResolvedValue([]),
+      findUpcomingParticipationLinksForAthletes: jest.fn().mockResolvedValue([]),
+      findUpcomingPreparationsForAthletes: jest.fn().mockResolvedValue([]),
       findUpcomingTrainingsForAthletes: jest.fn().mockResolvedValue([]),
       findActiveGoalsForAthletes: jest.fn().mockResolvedValue([]),
     };
@@ -324,6 +328,209 @@ describe("CoachDashboardService", () => {
       expect(dashboard.upcomingCompetitions).toHaveLength(1);
       expect(dashboard.upcomingCompetitions[0].athleteCount).toBe(2);
       expect(dashboard.upcomingCompetitions[0].athletes.map((a) => a.id).sort()).toEqual(["a-1", "a-2"]);
+    });
+  });
+
+  // Règle unique Athlete/Coach : voir competitions/next-competition.ts (testée
+  // pour elle-même). Ici : le branchement Coach (candidats, isolation, DTO).
+  describe("prochaine compétition — préparations du coach (règle partagée avec la vue Athlete)", () => {
+    const inDays = (n: number) => {
+      const now = new Date();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + n));
+    };
+
+    const competition = (id: string, nom: string, offset: number) => ({
+      id,
+      nom,
+      date_debut: inDays(offset),
+      ville: "Eaubonne",
+      pays: "France",
+      niveau: "national",
+    });
+
+    const prep = (athleteId: string, comp: ReturnType<typeof competition>, overrides: Record<string, unknown> = {}) => ({
+      athlete_id: athleteId,
+      competition_id: comp.id,
+      statut: "pret",
+      categorie_age_prevue: "Senior",
+      categorie_poids_prevue: "-68kg",
+      competition: comp,
+      ...overrides,
+    });
+
+    const participation = (athleteId: string, comp: ReturnType<typeof competition>, overrides: Record<string, unknown> = {}) => ({
+      athlete_id: athleteId,
+      categorie_poids: "-74kg",
+      categorie_age: "cadet",
+      competition: { ...comp, date_fin: null, lieu: null, sources: [] },
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      coachRepository.findAthletesForCoach.mockResolvedValue([athleteLink("a-1", "Kais", "Dilmi")]);
+    });
+
+    it("préparation future seule -> prochaine compétition, avec catégories prévues et statut (cas Kaïs)", async () => {
+      const champ = competition("c-champ", "Championnat de France seniors", 173);
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([prep("a-1", champ)]);
+
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toMatchObject({
+        source: "coach_preparation",
+        id: "c-champ",
+        name: "Championnat de France seniors",
+        city: "Eaubonne",
+        country: "France",
+        // Aucune participation : jamais de catégorie OFFICIELLE inventée.
+        weightCategory: null,
+        ageCategory: null,
+        preparation: { status: "pret", targetAgeCategory: "Senior", targetWeightCategory: "-68kg" },
+        daysUntil: 173,
+      });
+    });
+
+    it("plusieurs préparations -> la plus proche (10 oct. avant 13 mars avant 20 avr.), pas la plus éloignée", async () => {
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([
+        prep("a-1", competition("c-apr", "Avril", 200)),
+        prep("a-1", competition("c-oct", "Octobre", 19)),
+        prep("a-1", competition("c-mar", "Mars", 173)),
+      ]);
+
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toMatchObject({ id: "c-oct", name: "Octobre" });
+    });
+
+    it("préparation forfait -> jamais prochaine compétition (règle #13) ; la suivante active est retenue", async () => {
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([
+        prep("a-1", competition("c-f", "Forfait", 10), { statut: "forfait" }),
+        prep("a-1", competition("c-ok", "Suivante", 40), { statut: "selectionne" }),
+      ]);
+
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toMatchObject({ id: "c-ok", preparation: { status: "selectionne" } });
+    });
+
+    it("uniquement forfait -> null (empty state)", async () => {
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([
+        prep("a-1", competition("c-f", "Forfait", 10), { statut: "forfait" }),
+      ]);
+
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toBeNull();
+    });
+
+    it("aucune participation ni préparation -> null (empty state)", async () => {
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toBeNull();
+    });
+
+    it("participation seule -> source participation, sans préparation", async () => {
+      const comp = competition("c-1", "Paris Open", 30);
+      dashboardRepository.findUpcomingParticipationsForAthletes.mockResolvedValue([participation("a-1", comp)]);
+
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toMatchObject({
+        source: "participation",
+        id: "c-1",
+        weightCategory: "-74kg",
+        ageCategory: "cadet",
+        preparation: null,
+      });
+    });
+
+    it("participation + préparation sur la MÊME compétition -> UNE seule, participation prioritaire, catégories officielles non falsifiées", async () => {
+      const comp = competition("c-1", "Paris Open", 30);
+      dashboardRepository.findUpcomingParticipationsForAthletes.mockResolvedValue([participation("a-1", comp)]);
+      dashboardRepository.findUpcomingParticipationLinksForAthletes.mockResolvedValue([{ athlete_id: "a-1", competition_id: "c-1" }]);
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([prep("a-1", comp)]);
+
+      const dashboard = await service.getDashboard(COACH_ID);
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toMatchObject({
+        source: "participation",
+        weightCategory: "-74kg",
+        ageCategory: "cadet",
+        preparation: { status: "pret", targetWeightCategory: "-68kg" },
+      });
+      expect(dashboard.upcomingCompetitions).toHaveLength(1);
+      expect(dashboard.upcomingCompetitions[0].athleteCount).toBe(1);
+    });
+
+    it("participation plus proche qu'une préparation -> la participation ; préparation plus proche -> la préparation", async () => {
+      dashboardRepository.findUpcomingParticipationsForAthletes.mockResolvedValue([participation("a-1", competition("c-p", "P", 90))]);
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([prep("a-1", competition("c-r", "R", 20))]);
+      expect((await service.getAthleteSummaries(COACH_ID))[0].nextCompetition).toMatchObject({ id: "c-r", source: "coach_preparation" });
+
+      dashboardRepository.findUpcomingParticipationsForAthletes.mockResolvedValue([participation("a-1", competition("c-p", "P", 10))]);
+      expect((await service.getAthleteSummaries(COACH_ID))[0].nextCompetition).toMatchObject({ id: "c-p", source: "participation" });
+    });
+
+    it("compétition dont la participation est annulée/retirée : la préparation du coach n'est pas présentée seule", async () => {
+      const comp = competition("c-1", "Paris Open", 30);
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([prep("a-1", comp)]);
+      dashboardRepository.findUpcomingParticipationLinksForAthletes.mockResolvedValue([{ athlete_id: "a-1", competition_id: "c-1" }]);
+
+      const [summary] = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summary.nextCompetition).toBeNull();
+    });
+
+    it("isolation par athlète : la préparation d'un athlète n'apparaît jamais chez un autre", async () => {
+      coachRepository.findAthletesForCoach.mockResolvedValue([athleteLink("a-1", "Kais", "Dilmi"), athleteLink("a-2", "Adam", "Zidane")]);
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([prep("a-2", competition("c-2", "Pour A2", 20))]);
+
+      const summaries = await service.getAthleteSummaries(COACH_ID);
+
+      expect(summaries.find((s) => s.id === "a-1")!.nextCompetition).toBeNull();
+      expect(summaries.find((s) => s.id === "a-2")!.nextCompetition).toMatchObject({ id: "c-2" });
+    });
+
+    it("ISOLATION MULTI-COACH : seules les préparations du coach COURANT sont demandées (coachId passé au repository), depuis minuit UTC", async () => {
+      await service.getAthleteSummaries(COACH_ID);
+
+      const [athleteIds, coachId, fromDate] = dashboardRepository.findUpcomingPreparationsForAthletes.mock.calls[0];
+      expect(athleteIds).toEqual(["a-1"]);
+      expect(coachId).toBe(COACH_ID);
+      expect(fromDate).toEqual(inDays(0));
+      // La même règle "à venir" est appliquée aux participations (une seule définition de "aujourd'hui").
+      expect(dashboardRepository.findUpcomingParticipationsForAthletes.mock.calls[0][1]).toEqual(inDays(0));
+      expect(dashboardRepository.findUpcomingParticipationLinksForAthletes.mock.calls[0][1]).toEqual(inDays(0));
+    });
+
+    it("dashboard : une compétition seulement préparée compte comme 'à venir' et apparaît dans upcomingCompetitions, sans doublon", async () => {
+      coachRepository.findAthletesForCoach.mockResolvedValue([athleteLink("a-1", "Kais", "Dilmi"), athleteLink("a-2", "Adam", "Zidane")]);
+      const champ = competition("c-champ", "Championnat", 173);
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([prep("a-1", champ), prep("a-2", champ)]);
+
+      const dashboard = await service.getDashboard(COACH_ID);
+
+      expect(dashboard.summary.athletesWithUpcomingCompetition).toBe(2);
+      expect(dashboard.upcomingCompetitions).toHaveLength(1);
+      expect(dashboard.upcomingCompetitions[0].athleteCount).toBe(2);
+    });
+
+    it("jamais de champ privé dans la réponse (note_coach / objectif), même si la ligne source en contient", async () => {
+      dashboardRepository.findUpcomingPreparationsForAthletes.mockResolvedValue([
+        prep("a-1", competition("c-1", "Champ", 20), { note_coach: "NOTE-SECRETE", objectif: "OBJ-SECRET", coach_id: "coach-1" }),
+      ]);
+
+      const serialized = JSON.stringify(await service.getAthleteSummaries(COACH_ID));
+
+      expect(serialized).not.toContain("NOTE-SECRETE");
+      expect(serialized).not.toContain("OBJ-SECRET");
+      expect(serialized).not.toMatch(/note_coach|coachNote|objectif|objective|coach_id/);
+    });
+
+    it("ne demande que des lectures : aucune écriture de participation n'existe sur ce service", () => {
+      const writers = Object.getOwnPropertyNames(CoachDashboardService.prototype).filter((name) => /^(create|update|delete|participate)/i.test(name));
+      expect(writers).toEqual([]);
     });
   });
 

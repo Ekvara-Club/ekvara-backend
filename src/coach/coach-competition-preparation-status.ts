@@ -9,3 +9,8 @@ export const PREPARATION_STATUSES = ["envisage", "selectionne", "pret", "forfait
 export type PreparationStatus = (typeof PREPARATION_STATUSES)[number];
 
 export const DEFAULT_PREPARATION_STATUS: PreparationStatus = "envisage";
+
+// Statut "l'athlète ne participera pas" : SEULE définition, réutilisée par la
+// règle "prochaine compétition" (Athlete ET Coach, voir
+// competitions/next-competition.ts) — jamais redéclarée ailleurs.
+export const FORFAIT_PREPARATION_STATUS: PreparationStatus = "forfait";
