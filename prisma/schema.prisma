@@ -101,6 +101,7 @@ model competition {
   entries                       competition_entry[]
   matches                       competition_match[]
   coach_competition_preparation coach_competition_preparation[]
+  wt_backfill_events            wt_backfill_event[]
 }
 
 // Références externes d'une competition canonique EKVARA : une même
@@ -786,4 +787,76 @@ model club_invitation {
 
   @@index([club_id])
   @@index([created_by_coach_id])
+}
+
+// ---------------------------------------------------------------------------
+// Ticket #12E — moteur d'orchestration du backfill WT Results (discovery,
+// queue persistée, reprise après crash). N'IMPORTE RIEN lui-même : ORCHESTRE
+// le pipeline existant (WtResultsImportService.runPilot, wtr-competition-
+// matcher). Voir src/international/wt-backfill/.
+//
+// Un run représente une demande bornée et immuable après discovery : la
+// discovery fige une fois pour toutes la liste + l'ordre des événements
+// (wt_backfill_event.sequence). Une nouvelle discovery = un nouveau run.
+// ---------------------------------------------------------------------------
+
+// Statuts (voir wt-backfill-state.ts, seule source de vérité des transitions
+// autorisées) : PENDING -> RUNNING -> COMPLETED | BLOCKED | FAILED.
+// Pas de CANCELLED : aucune commande #12E ne l'utilise (annulation = laisser
+// le run BLOCKED/FAILED en l'état, resumable plus tard).
+model wt_backfill_run {
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  status                 String    @db.VarChar(20)
+  // Scope figé à la création : {"kind":"year","year":2026} ou
+  // {"kind":"range","from":"...","to":"..."} ou {"kind":"slugs","slugs":[...]}.
+  requested_scope        Json
+  discovered_event_count Int       @default(0)
+  completed_event_count  Int       @default(0)
+  blocked_event_count    Int       @default(0)
+  failed_event_count     Int       @default(0)
+  notes                  String?
+  created_at             DateTime  @default(now()) @db.Timestamp(6)
+  started_at             DateTime? @db.Timestamp(6)
+  finished_at            DateTime? @db.Timestamp(6)
+
+  events wt_backfill_event[]
+
+  @@index([status])
+}
+
+// Un événement Results borné (identité externe = slug, déjà la clé stable
+// utilisée par tout le pipeline existant). mapping_verdict/competition_id
+// sont calculés une fois à la discovery (canonical matcher, jamais réélargi
+// ici) : SAFE -> PENDING, AMBIGUOUS/UNMATCHED -> BLOCKED immédiatement, sans
+// jamais être traité.
+model wt_backfill_event {
+  id                     String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  run_id                 String       @db.Uuid
+  run                    wt_backfill_run @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sequence               Int
+  slug                   String       @db.VarChar(255)
+  event_name             String?      @db.VarChar(255)
+  event_date_start       DateTime?    @db.Date
+  event_date_end         DateTime?    @db.Date
+  mapping_verdict        String       @db.VarChar(20)
+  competition_id         String?      @db.Uuid
+  competition            competition? @relation(fields: [competition_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  status                 String       @db.VarChar(20)
+  attempt_count          Int          @default(0)
+  started_at             DateTime?    @db.Timestamp(6)
+  finished_at            DateTime?    @db.Timestamp(6)
+  last_error             String?
+  // Reprise "au mieux" intra-événement : dernière catégorie terminée. Le
+  // pipeline runPilot reste la source d'idempotence réelle (par match) ; ce
+  // champ évite seulement de refaire les catégories déjà propres.
+  last_completed_category String?     @db.VarChar(100)
+  // Agrégat du PilotImportReport (catégories traitées, combats créés/
+  // attachés/rafraîchis, athlètes créés/réutilisés, conflicts, ambiguous,
+  // parse failures, pages, durée).
+  stats                  Json?
+  created_at             DateTime     @default(now()) @db.Timestamp(6)
+
+  @@unique([run_id, slug])
+  @@index([run_id, sequence])
+  @@index([status])
 }

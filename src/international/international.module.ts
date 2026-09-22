@@ -6,6 +6,8 @@ import { InternationalRepository } from "./international.repository";
 import { InternationalService } from "./international.service";
 import { WorldTaekwondoResultsImporterService } from "./wt-results/wt-results-importer.service";
 import { WtResultsImportService } from "./wt-results/wt-results-import.service";
+import { WtBackfillRepository } from "./wt-backfill/wt-backfill.repository";
+import { WtBackfillService } from "./wt-backfill/wt-backfill.service";
 
 // Athlètes publics/internationaux, matchs et leur import depuis World
 // Taekwondo Results (ticket "WT Results Data Foundation V1"). Aucune
@@ -20,6 +22,8 @@ import { WtResultsImportService } from "./wt-results/wt-results-import.service";
     InternationalRepository,
     WorldTaekwondoResultsImporterService,
     WtResultsImportService,
+    WtBackfillRepository,
+    WtBackfillService,
   ],
 })
 export class InternationalModule {}
