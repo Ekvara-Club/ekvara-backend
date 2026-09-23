@@ -144,10 +144,29 @@ describe("mapResultsCompetition", () => {
   });
 
   describe("normalizeCompetitionName", () => {
-    it("retire accents, apostrophes, ponctuation et mots génériques, trie et déduplique", () => {
-      expect(normalizeCompetitionName("Roma 2026 World Taekwondo Grand-Prix")).toBe("2026 grand prix roma");
-      expect(normalizeCompetitionName("Roma 2026 World Taekwondo Grand Prix Series")).toBe("2026 grand prix roma");
-      expect(normalizeCompetitionName("Niš  Open — 2026 ’Cup’")).toBe("2026 cup nis open");
+    it("retire accents, apostrophes, ponctuation, mots génériques, année et numéro d'édition ordinal, trie et déduplique", () => {
+      expect(normalizeCompetitionName("Roma 2026 World Taekwondo Grand-Prix")).toBe("grand prix roma");
+      expect(normalizeCompetitionName("Roma 2026 World Taekwondo Grand Prix Series")).toBe("grand prix roma");
+      expect(normalizeCompetitionName("Niš  Open — 2026 ’Cup’")).toBe("cup nis open");
+    });
+
+    it("retire l'année (4 chiffres) mais préserve les autres nombres distinctifs", () => {
+      expect(normalizeCompetitionName("Belgian Open 2025")).toBe("belgian open");
+      expect(normalizeCompetitionName("Belgian Open")).toBe("belgian open");
+    });
+
+    it("retire le numéro d'édition ordinal mais préserve les autres nombres distinctifs", () => {
+      expect(normalizeCompetitionName("12th Fujairah Open 2025")).toBe("fujairah open");
+      expect(normalizeCompetitionName("Fujairah Open 2025")).toBe("fujairah open");
+      expect(normalizeCompetitionName("33rd SEA Games Thailand 2025")).toBe("games sea thailand");
+    });
+
+    it("ne retire pas un nombre à 4 chiffres qui n'est pas au format année pur (ex: dans un token composé)", () => {
+      expect(normalizeCompetitionName("U2025 Open")).toBe("open u2025");
+    });
+
+    it("ne retire pas un nombre qui n'est pas un ordinal reconnu (ex: catégorie de poids, âge)", () => {
+      expect(normalizeCompetitionName("Open U21 58kg")).toBe("58kg open u21");
     });
   });
 });

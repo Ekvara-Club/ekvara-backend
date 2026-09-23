@@ -57,6 +57,21 @@ export interface WtrMappingResult {
 // "poomsae", "open", "championships"... tout ce qui distingue vraiment.
 const GENERIC_TOKENS = new Set(["world", "taekwondo", "wt", "series", "the", "of", "and", "de", "du", "la", "le"]);
 
+// Année calendaire (4 chiffres) : jamais distinctive une fois les dates exactes
+// déjà vérifiées par ailleurs (règle 1 de mapResultsCompetition ci-dessus) —
+// prouvé sûr par simulation #12I-A sur 175 compétitions canoniques × 108
+// événements Results (2025+2026) : gain 12, 0 collision, 0 SAFE modifié.
+// Même pattern que matching/competition-matcher.ts::significantTokens().
+const YEAR_TOKEN = /^\d{4}$/;
+
+// Numéro d'édition ordinal ("12th", "1st", "33rd"...) : redondant avec la date
+// exacte déjà vérifiée, jamais utilisé pour distinguer deux compétitions à la
+// même date — prouvé sûr par simulation #12I-A (même corpus, gain incrémental
+// 1, 0 collision, 0 SAFE modifié). Le token est retiré entièrement (jamais
+// réduit à un nombre nu) car #12I-A n'a validé que le retrait, pas une
+// transformation numérique.
+const ORDINAL_TOKEN = /^\d+(st|nd|rd|th)$/;
+
 const MIN_DISTINCTIVE_TOKENS = 2;
 
 export function normalizeCompetitionName(name: string): string {
@@ -152,7 +167,11 @@ function distinctiveTokens(name: string): string[] {
     .replace(/['’`]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
-  const tokens = normalized.split(" ").filter((t) => t.length > 0 && !GENERIC_TOKENS.has(t));
+  const tokens = normalized
+    .split(" ")
+    .filter((t) => t.length > 0 && !GENERIC_TOKENS.has(t))
+    .filter((t) => !YEAR_TOKEN.test(t))
+    .filter((t) => !ORDINAL_TOKEN.test(t));
   return [...new Set(tokens)].sort();
 }
 
