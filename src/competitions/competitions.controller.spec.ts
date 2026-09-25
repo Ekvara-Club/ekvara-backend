@@ -13,7 +13,7 @@ import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/au
 // via le pipeline de requête réel de Nest.
 describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () => {
   let app: INestApplication;
-  let service: { findOne: jest.Mock; findAll: jest.Mock; findAllPaginated: jest.Mock };
+  let service: { findOne: jest.Mock; findAll: jest.Mock; findAllPaginated: jest.Mock; listYears: jest.Mock };
   let entriesService: { findByCompetition: jest.Mock };
 
   const VALID_COMPETITION_ID = "2e5709b9-7385-4a79-be70-ddd3c573ae51";
@@ -21,7 +21,7 @@ describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () 
   let authCookie: string;
 
   beforeEach(async () => {
-    service = { findOne: jest.fn(), findAll: jest.fn(), findAllPaginated: jest.fn() };
+    service = { findOne: jest.fn(), findAll: jest.fn(), findAllPaginated: jest.fn(), listYears: jest.fn() };
     entriesService = { findByCompetition: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
@@ -155,7 +155,25 @@ describe("CompetitionsController (HTTP) - GET /competitions/:competitionId", () 
         page: 1,
         limit: 20,
         scope: "upcoming",
+        year: undefined,
       });
+    });
+
+    it("year transmis (entier), compose avec scope et search", async () => {
+      service.findAllPaginated.mockResolvedValue({ items: [], total: 0, page: 1, limit: 20 });
+      await request(app.getHttpServer()).get("/competitions?page=1&limit=20&scope=past&year=2025&search=open").expect(200);
+      expect(service.findAllPaginated).toHaveBeenCalledWith({ search: "open", page: 1, limit: 20, scope: "past", year: 2025 });
+    });
+
+    it.each(["abc", "2025.5", "1999", "2101", "-2025"])("year invalide (%s) -> 400, service jamais appelé", async (year) => {
+      await request(app.getHttpServer()).get(`/competitions?page=1&limit=20&year=${year}`).expect(400);
+      expect(service.findAllPaginated).not.toHaveBeenCalled();
+    });
+
+    it("GET /competitions/years -> années disponibles (jamais interprété comme un :competitionId)", async () => {
+      service.listYears.mockResolvedValue({ years: [2026, 2025] });
+      const response = await request(app.getHttpServer()).get("/competitions/years").expect(200);
+      expect(response.body).toEqual({ years: [2026, 2025] });
     });
 
     it("scope invalide -> 400", async () => {

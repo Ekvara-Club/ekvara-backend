@@ -23,8 +23,12 @@ export class CompetitionsService {
     return this.competitionsRepository.findMany(search);
   }
 
-  findAllPaginated(params: { search?: string; page: number; limit: number; scope?: "upcoming" | "past" }) {
+  findAllPaginated(params: { search?: string; page: number; limit: number; scope?: "upcoming" | "past"; year?: number }) {
     return this.competitionsRepository.findManyPaginated(params);
+  }
+
+  async listYears() {
+    return { years: await this.competitionsRepository.listYears() };
   }
 
   async findOne(id: string) {

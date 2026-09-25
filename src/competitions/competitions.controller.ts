@@ -36,6 +36,7 @@ export class CompetitionsController {
     @Query("page") pageParam?: string,
     @Query("limit") limitParam?: string,
     @Query("scope") scope?: string,
+    @Query("year") yearParam?: string,
   ) {
     if (pageParam === undefined && limitParam === undefined) {
       return this.competitionsService.findAll(search);
@@ -48,12 +49,25 @@ export class CompetitionsController {
       throw new BadRequestException('Le paramètre scope doit valoir "upcoming" ou "past"');
     }
 
+    // year (optionnel, ticket #18) : année de date_debut, compose avec scope
+    // et search ; mêmes bornes que l'import World Taekwondo.
+    const year = yearParam === undefined || yearParam === "" ? undefined : this.parseYear(yearParam);
+
     return this.competitionsService.findAllPaginated({
       search,
       page,
       limit,
       scope: scope as "upcoming" | "past" | undefined,
+      year,
     });
+  }
+
+  // Années disponibles pour le filtre de l'explorateur (ticket #18) : public,
+  // comme GET /competitions. Déclarée AVANT :competitionId pour ne jamais être
+  // interprétée comme un identifiant.
+  @Get("years")
+  listYears() {
+    return this.competitionsService.listYears();
   }
 
   private parsePositiveInt(value: string | undefined, name: string, fallback: number, max?: number): number {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { competition as CompetitionModel } from "../../generated/prisma/client";
+import { competition as CompetitionModel, Prisma } from "../../generated/prisma/client";
+import { todayUtcMidnight } from "./next-competition";
 import { ImportedCompetition } from "./importers/imported-competition.interface";
 import { matchCompetitions } from "./matching/competition-matcher";
 
@@ -65,29 +66,44 @@ export class CompetitionsRepository {
     page: number;
     limit: number;
     scope?: "upcoming" | "past";
+    year?: number;
   }) {
-    const { search, page, limit, scope } = params;
+    const { search, page, limit, scope, year } = params;
 
-    const where: Record<string, unknown> = {};
+    const and: Prisma.competitionWhereInput[] = [];
     if (search) {
-      where.OR = [
-        { nom: { contains: search, mode: "insensitive" } },
-        { ville: { contains: search, mode: "insensitive" } },
-        { pays: { contains: search, mode: "insensitive" } },
-      ];
+      and.push({
+        OR: [
+          { nom: { contains: search, mode: "insensitive" } },
+          { ville: { contains: search, mode: "insensitive" } },
+          { pays: { contains: search, mode: "insensitive" } },
+        ],
+      });
     }
     if (scope === "upcoming" || scope === "past") {
-      // date_debut est une DATE métier (voir CLAUDE.md §20) : comparaison
-      // sur le jour courant, jamais un timestamp UTC naïf.
-      const startOfToday = new Date();
-      startOfToday.setUTCHours(0, 0, 0, 0);
-      where.date_debut = scope === "upcoming" ? { gte: startOfToday } : { lt: startOfToday };
+      // Statut temporel = MÊME règle que la saisie de résultat
+      // (ParticipationsService) : date de fin effective = date_fin ??
+      // date_debut, comparée au jour courant UTC partagé (todayUtcMidnight,
+      // next-competition.ts). Passée ⇔ fin effective strictement avant
+      // aujourd'hui ; à venir ⇔ fin effective aujourd'hui ou après — une
+      // compétition multi-jours EN COURS reste donc "à venir", jamais "passée".
+      // Colonnes DATE : aucune heure, aucun décalage de fuseau.
+      const today = todayUtcMidnight();
+      const cmp = scope === "upcoming" ? { gte: today } : { lt: today };
+      and.push({ OR: [{ date_fin: cmp }, { date_fin: null, date_debut: cmp }] });
     }
+    if (year !== undefined) {
+      // Année = année de date_debut (date canonique de début de l'événement).
+      and.push({ date_debut: { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) } });
+    }
+    const where: Prisma.competitionWhereInput = and.length > 0 ? { AND: and } : {};
 
     // À venir : date_debut ASC (le plus proche d'abord) ; passées : DESC (le
     // plus récent d'abord) ; sans scope : comportement par défaut DESC,
-    // identique à findMany() (ticket §9).
-    const orderBy = { date_debut: scope === "upcoming" ? ("asc" as const) : ("desc" as const) };
+    // identique à findMany() (ticket §9). id en départage : ordre total,
+    // pagination stable à date égale.
+    const direction = scope === "upcoming" ? ("asc" as const) : ("desc" as const);
+    const orderBy = [{ date_debut: direction }, { id: "asc" as const }];
 
     const [competitions, total] = await Promise.all([
       this.prisma.competition.findMany({
@@ -101,6 +117,14 @@ export class CompetitionsRepository {
     ]);
 
     return { items: competitions.map(withPrimarySourceFlat), total, page, limit };
+  }
+
+  // Années réellement présentes dans le catalogue (année de date_debut),
+  // de la plus récente à la plus ancienne — jamais une liste codée en dur.
+  async listYears(): Promise<number[]> {
+    const rows = await this.prisma.$queryRaw<{ year: number }[]>`
+      SELECT DISTINCT EXTRACT(YEAR FROM date_debut)::int AS year FROM competition ORDER BY year DESC`;
+    return rows.map((r) => r.year);
   }
 
   async findById(id: string) {

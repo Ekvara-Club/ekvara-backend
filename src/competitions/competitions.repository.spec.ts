@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { CompetitionsRepository } from "./competitions.repository";
+import { todayUtcMidnight } from "./next-competition";
 import { ImportedCompetition } from "./importers/imported-competition.interface";
 
 // Test d'intégration contre la vraie base Postgres locale : la logique de
@@ -447,6 +448,80 @@ describe("CompetitionsRepository (intégration Postgres)", () => {
       const { past1, past2 } = await createFixtures();
       const result = await repository.findManyPaginated({ search: `Paginated`, page: 1, limit: 10, scope: "past" });
       expect(result.items.map((c) => c.id)).toEqual([past1.id, past2.id]);
+    });
+
+    // Ticket #18 : statut temporel sur la date de FIN effective (date_fin ??
+    // date_debut) vs jour courant UTC partagé, et filtre année (date_debut).
+    describe("statut (fin effective) + année (#18)", () => {
+      const DAY = 86400000;
+      const today = todayUtcMidnight();
+      const day = (offset: number) => new Date(today.getTime() + offset * DAY);
+      const tag = `Filtre18 ${runId}`;
+
+      async function create(label: string, debut: Date, fin: Date | null = null) {
+        const c = await prisma.competition.create({ data: { nom: `${tag} ${label}`, date_debut: debut, date_fin: fin } });
+        createdCompetitionIds.push(c.id);
+        return c;
+      }
+
+      it("un jour aujourd'hui ⇒ à venir ; multi-jours EN COURS ⇒ à venir (jamais passée) ; fini hier ⇒ passée ; un jour hier ⇒ passée", async () => {
+        const todayOneDay = await create("un-jour-aujourdhui", day(0));
+        const running = await create("en-cours", day(-1), day(1));
+        const endsToday = await create("finit-aujourdhui", day(-2), day(0));
+        const endedYesterday = await create("fini-hier", day(-3), day(-1));
+        const oneDayYesterday = await create("un-jour-hier", day(-1));
+
+        const upcoming = await repository.findManyPaginated({ search: tag, page: 1, limit: 20, scope: "upcoming" });
+        const past = await repository.findManyPaginated({ search: tag, page: 1, limit: 20, scope: "past" });
+        const all = await repository.findManyPaginated({ search: tag, page: 1, limit: 20 });
+
+        expect(new Set(upcoming.items.map((c) => c.id))).toEqual(new Set([todayOneDay.id, running.id, endsToday.id]));
+        expect(new Set(past.items.map((c) => c.id))).toEqual(new Set([endedYesterday.id, oneDayYesterday.id]));
+        // Toutes = union exacte, sans doublon ni omission.
+        expect(all.total).toBe(upcoming.total + past.total);
+      });
+
+      it("année = année de date_debut ; compose avec le statut (à venir + année, passée + année)", async () => {
+        const y = today.getUTCFullYear();
+        const pastThisYear = await create("passee-annee", new Date(Date.UTC(y, 0, 1)), new Date(Date.UTC(y, 0, 2)));
+        const pastLastYear = await create("passee-annee-1", new Date(Date.UTC(y - 1, 11, 30)), new Date(Date.UTC(y, 0, 0)));
+        const upcomingNextYear = await create("avenir-annee+1", new Date(Date.UTC(y + 1, 5, 1)));
+        // À cheval sur deux années : rattachée à l'année de son DÉBUT.
+        const straddle = await create("a-cheval", new Date(Date.UTC(y + 1, 11, 31)), new Date(Date.UTC(y + 2, 0, 2)));
+
+        const ids = async (params: { scope?: "upcoming" | "past"; year?: number }) =>
+          (await repository.findManyPaginated({ search: tag, page: 1, limit: 20, ...params })).items.map((c) => c.id);
+
+        // Garde : le 1er janvier, "passee-annee" n'est pas encore passée (on vérifie la vraie règle, pas le calendrier du jour).
+        const pastThisYearIsPast = new Date(Date.UTC(y, 0, 2)) < today;
+        expect(await ids({ scope: "past", year: y })).toEqual(pastThisYearIsPast ? [pastThisYear.id] : []);
+        expect(await ids({ scope: "past", year: y - 1 })).toEqual([pastLastYear.id]);
+        expect(await ids({ scope: "upcoming", year: y + 1 })).toEqual([upcomingNextYear.id, straddle.id]);
+        expect(await ids({ year: y + 2 })).toEqual([]);
+        expect(await ids({ scope: "upcoming", year: y - 1 })).toEqual([]);
+      });
+
+      it("pagination + filtres : ordre total stable à date égale (id en départage), aucun doublon entre pages", async () => {
+        const sameDay = day(30);
+        const created: { id: string }[] = [];
+        for (let i = 0; i < 5; i++) created.push(await create(`meme-jour-${i}`, sameDay));
+        const seen: string[] = [];
+        for (let page = 1; page <= 3; page++) {
+          const res = await repository.findManyPaginated({ search: `${tag} meme-jour`, page, limit: 2, scope: "upcoming", year: sameDay.getUTCFullYear() });
+          expect(res.total).toBe(5);
+          seen.push(...res.items.map((c) => c.id));
+        }
+        expect(seen).toEqual(created.map((c) => c.id).sort());
+      });
+
+      it("listYears : années réelles (date_debut), décroissantes, sans doublon", async () => {
+        await create("annee-lointaine", new Date(Date.UTC(2097, 3, 1)));
+        await create("annee-lointaine-bis", new Date(Date.UTC(2097, 8, 1)));
+        const years = await repository.listYears();
+        expect(years).toContain(2097);
+        expect(years.filter((y) => y === 2097)).toHaveLength(1);
+        expect([...years].sort((a, b) => b - a)).toEqual(years);
+      });
     });
 
     it("search filtre par nom, ville OU pays (insensible à la casse)", async () => {
