@@ -18,6 +18,8 @@ describe("International controllers (HTTP)", () => {
     getCompetitionMatches: jest.Mock;
     searchAthletes: jest.Mock;
     getAthleteCompetitions: jest.Mock;
+    getCompetitionResultsSummary: jest.Mock;
+    getCompetitionCategoryResults: jest.Mock;
   };
   let cookie: string;
 
@@ -30,6 +32,8 @@ describe("International controllers (HTTP)", () => {
       getCompetitionMatches: jest.fn(),
       searchAthletes: jest.fn(),
       getAthleteCompetitions: jest.fn(),
+      getCompetitionResultsSummary: jest.fn(),
+      getCompetitionCategoryResults: jest.fn(),
     };
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule()],
@@ -52,6 +56,7 @@ describe("International controllers (HTTP)", () => {
     ["GET /international-athletes/:id/matches", `/international-athletes/${ID}/matches`],
     ["GET /competitions/:competitionId/matches", `/competitions/${ID}/matches`],
     ["GET /international-athletes/:id/competitions", `/international-athletes/${ID}/competitions`],
+    ["GET /competitions/:competitionId/results", `/competitions/${ID}/results`],
   ])("%s", (_label, url) => {
     it("sans authentification -> 401, service jamais appelé", async () => {
       await request(app.getHttpServer()).get(url).expect(401);
@@ -59,6 +64,8 @@ describe("International controllers (HTTP)", () => {
       expect(service.getAthleteMatches).not.toHaveBeenCalled();
       expect(service.getCompetitionMatches).not.toHaveBeenCalled();
       expect(service.getAthleteCompetitions).not.toHaveBeenCalled();
+      expect(service.getCompetitionResultsSummary).not.toHaveBeenCalled();
+      expect(service.getCompetitionCategoryResults).not.toHaveBeenCalled();
     });
 
     it("UUID invalide -> 400", async () => {
@@ -160,6 +167,29 @@ describe("International controllers (HTTP)", () => {
       service.getAthleteCompetitions.mockRejectedValue(new NotFoundException("introuvable"));
       await request(app.getHttpServer()).get(`/international-athletes/${ID}/competitions`).set("Cookie", cookie).expect(404);
       await request(app.getHttpServer()).get(`/international-athletes/${ID}/competitions?limit=51`).set("Cookie", cookie).expect(400);
+    });
+  });
+
+  describe("GET /competitions/:competitionId/results", () => {
+    it("sans catégorie ⇒ résumé ; avec ?category ⇒ combats de la catégorie, label transmis tel quel (encodé)", async () => {
+      service.getCompetitionResultsSummary.mockResolvedValue({ competitionId: ID, matchCount: 0, athleteCount: 0, categories: [] });
+      service.getCompetitionCategoryResults.mockResolvedValue({ competitionId: ID, category: "Men +80kg", fightCount: 0, rounds: [] });
+      await request(app.getHttpServer()).get(`/competitions/${ID}/results`).set("Cookie", cookie).expect(200);
+      expect(service.getCompetitionResultsSummary).toHaveBeenCalledWith(ID);
+      expect(service.getCompetitionCategoryResults).not.toHaveBeenCalled();
+      await request(app.getHttpServer())
+        .get(`/competitions/${ID}/results?category=${encodeURIComponent("Men +80kg")}`)
+        .set("Cookie", cookie)
+        .expect(200);
+      expect(service.getCompetitionCategoryResults).toHaveBeenCalledWith(ID, "Men +80kg");
+    });
+
+    it("catégorie vide ou trop longue -> 400 ; catégorie/compétition inconnue -> 404", async () => {
+      await request(app.getHttpServer()).get(`/competitions/${ID}/results?category=%20`).set("Cookie", cookie).expect(400);
+      await request(app.getHttpServer()).get(`/competitions/${ID}/results?category=${"x".repeat(101)}`).set("Cookie", cookie).expect(400);
+      expect(service.getCompetitionCategoryResults).not.toHaveBeenCalled();
+      service.getCompetitionCategoryResults.mockRejectedValue(new NotFoundException("introuvable"));
+      await request(app.getHttpServer()).get(`/competitions/${ID}/results?category=Men%20-99kg`).set("Cookie", cookie).expect(404);
     });
   });
 });

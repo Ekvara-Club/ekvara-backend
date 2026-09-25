@@ -110,9 +110,14 @@ export class CompetitionsRepository {
       // besoin que d'UNE competition, jamais de N+1 — récupérer toutes ses
       // sources (au plus 2 aujourd'hui) est sans risque de performance,
       // nécessaire pour la section "Sources des données" (ticket §20).
-      include: { sources: { orderBy: { created_at: "asc" } } },
+      // _count (même requête) : jeux de données disponibles pour la fiche
+      // (ticket Competition Detail V2) — inscrits publiés et combats logiques
+      // (competition_match, jamais leurs représentations source).
+      include: { sources: { orderBy: { created_at: "asc" } }, _count: { select: { entries: true, matches: true } } },
     });
-    return competition ? withPrimarySourceFlatAndAllSources(competition) : null;
+    if (!competition) return null;
+    const { _count, ...rest } = competition;
+    return { ...withPrimarySourceFlatAndAllSources(rest), counts: { entries: _count.entries, matches: _count.matches } };
   }
 
   async upsertFromSource(data: ImportedCompetition): Promise<UpsertResult> {

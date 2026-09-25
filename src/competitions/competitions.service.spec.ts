@@ -347,6 +347,7 @@ describe("CompetitionsService", () => {
         { source: "fftda", source_url: null },
         { source: "world_taekwondo", source_url: "https://example.org/wt/26025" },
       ],
+      counts: { entries: 0, matches: 234 },
     };
 
     it("retourne une vue stable (jamais l'objet Prisma brut) quand la compétition existe", async () => {
@@ -371,10 +372,19 @@ describe("CompetitionsService", () => {
           { source: "fftda", sourceUrl: null },
           { source: "world_taekwondo", sourceUrl: "https://example.org/wt/26025" },
         ],
+        availability: { entryCount: 0, matchCount: 234 },
       });
       // Jamais l'objet Prisma brut : pas de created_at/updated_at exposés.
       expect(result).not.toHaveProperty("created_at");
       expect(result).not.toHaveProperty("updated_at");
+    });
+
+    it("availability : inscrits et combats comptés séparément, 0 conservé (jamais confondu avec absent)", async () => {
+      repository.findById.mockResolvedValue({ ...dbCompetition, counts: { entries: 12, matches: 0 } });
+
+      const result = await service.findOne(dbCompetition.id);
+
+      expect(result.availability).toEqual({ entryCount: 12, matchCount: 0 });
     });
 
     it("ne fabrique jamais organisateur/lieu/saison : une valeur null en base reste null dans la vue", async () => {

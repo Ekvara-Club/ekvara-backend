@@ -527,6 +527,39 @@ export class InternationalRepository {
     return this.paginateMatches({ competition_id: competitionId }, page, limit);
   }
 
+  // Résumé des résultats d'une compétition canonique : par catégorie
+  // (label stocké tel quel, jamais fusionné), nombre de combats LOGIQUES et
+  // d'athlètes distincts, plus les totaux de l'événement. Deux requêtes
+  // agrégées, indépendantes du nombre de combats ; les représentations
+  // source (competition_match_source) n'interviennent jamais.
+  async summarizeCompetitionResults(competitionId: string) {
+    const [categories, totals] = await Promise.all([
+      this.prisma.$queryRaw<{ category_label: string | null; fights: number; athletes: number }[]>`
+        SELECT m.category_label, COUNT(DISTINCT m.id)::int AS fights, COUNT(DISTINCT x.athlete_id)::int AS athletes
+        FROM competition_match m
+        CROSS JOIN LATERAL (VALUES (m.athlete_a_id), (m.athlete_b_id)) AS x(athlete_id)
+        WHERE m.competition_id = ${competitionId}::uuid
+        GROUP BY m.category_label`,
+      this.prisma.$queryRaw<{ fights: number; athletes: number }[]>`
+        SELECT COUNT(DISTINCT m.id)::int AS fights, COUNT(DISTINCT x.athlete_id)::int AS athletes
+        FROM competition_match m
+        CROSS JOIN LATERAL (VALUES (m.athlete_a_id), (m.athlete_b_id)) AS x(athlete_id)
+        WHERE m.competition_id = ${competitionId}::uuid`,
+    ]);
+    return { categories, fights: totals[0]?.fights ?? 0, athletes: totals[0]?.athletes ?? 0 };
+  }
+
+  // Tous les combats logiques d'UNE catégorie (volume borné : 72 combats au
+  // plus dans le corpus réel), avec athlètes, vainqueur et représentations
+  // source en une seule requête (include), sans N+1.
+  async findCompetitionCategoryMatches(competitionId: string, categoryLabel: string) {
+    return this.prisma.competition_match.findMany({
+      where: { competition_id: competitionId, category_label: categoryLabel },
+      include: MATCH_INCLUDE,
+      orderBy: [{ contest_number: { sort: "asc", nulls: "last" } }, { id: "asc" }],
+    });
+  }
+
   private async paginateMatches(where: Prisma.competition_matchWhereInput, page: number, limit: number) {
     const [items, total] = await Promise.all([
       this.prisma.competition_match.findMany({

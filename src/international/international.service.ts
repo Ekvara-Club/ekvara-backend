@@ -64,6 +64,51 @@ export class InternationalService {
     return { items, total, page, limit };
   }
 
+  // Résumé des résultats d'une compétition canonique : totaux + catégories
+  // ordonnées — jamais la liste des combats (voir getCompetitionCategoryResults).
+  async getCompetitionResultsSummary(competitionId: string) {
+    await this.assertCompetitionExists(competitionId);
+    const summary = await this.repository.summarizeCompetitionResults(competitionId);
+    return {
+      competitionId,
+      matchCount: summary.fights,
+      athleteCount: summary.athletes,
+      categories: summary.categories
+        .filter((c): c is { category_label: string; fights: number; athletes: number } => c.category_label !== null)
+        .map((c) => ({ label: c.category_label, fightCount: c.fights, athleteCount: c.athletes }))
+        .sort((a, b) => compareCategoryLabels(a.label, b.label)),
+    };
+  }
+
+  // Combats d'UNE catégorie (label stocké exact) groupés par tour, dans
+  // l'ordre du tableau (R32 → F), tour inconnu en dernier.
+  async getCompetitionCategoryResults(competitionId: string, category: string) {
+    await this.assertCompetitionExists(competitionId);
+    const matches = await this.repository.findCompetitionCategoryMatches(competitionId, category);
+    if (matches.length === 0) {
+      throw new NotFoundException(`Catégorie "${category}" introuvable pour la competition ${competitionId}`);
+    }
+    const fights = matches.map(toResultFightView).sort(
+      (a, b) =>
+        stageRank(a.stage) - stageRank(b.stage) ||
+        (a.contestNumber ?? Number.MAX_SAFE_INTEGER) - (b.contestNumber ?? Number.MAX_SAFE_INTEGER) ||
+        a.id.localeCompare(b.id),
+    );
+    const rounds: { stage: string | null; fights: typeof fights }[] = [];
+    for (const fight of fights) {
+      const last = rounds[rounds.length - 1];
+      if (last && last.stage === fight.stage) last.fights.push(fight);
+      else rounds.push({ stage: fight.stage, fights: [fight] });
+    }
+    return { competitionId, category, fightCount: fights.length, rounds };
+  }
+
+  private async assertCompetitionExists(competitionId: string) {
+    if (!(await this.repository.competitionExists(competitionId))) {
+      throw new NotFoundException(`Competition ${competitionId} introuvable`);
+    }
+  }
+
   async getCompetitionMatches(competitionId: string, page: number, limit: number) {
     if (!(await this.repository.competitionExists(competitionId))) {
       throw new NotFoundException(`Competition ${competitionId} introuvable`);
@@ -214,7 +259,7 @@ export function toAthleteFightView(match: MatchWithRelations, athleteId: string)
 // Ordre de lecture d'un parcours : tours du tableau dans l'ordre réel
 // (R128 → F), puis numéro de combat, puis id ; tour inconnu en dernier.
 const STAGE_ORDER = ["R128", "R64", "R32", "R16", "QF", "SF", "BMC", "F"];
-function stageRank(stage: string | null): number {
+export function stageRank(stage: string | null): number {
   const index = stage === null ? -1 : STAGE_ORDER.indexOf(stage);
   return index === -1 ? STAGE_ORDER.length : index;
 }
@@ -224,4 +269,60 @@ function compareFightsInBracketOrder(a: ReturnType<typeof toAthleteFightView>, b
     (a.contestNumber ?? Number.MAX_SAFE_INTEGER) - (b.contestNumber ?? Number.MAX_SAFE_INTEGER) ||
     a.id.localeCompare(b.id)
   );
+}
+
+// Côté vainqueur d'un combat, d'après le SEUL vainqueur enregistré (même
+// sémantique que athleteResult : jamais les scores). Fail-safe : vainqueur
+// absent ou étranger au combat ⇒ null (aucun vainqueur affiché).
+export function winnerSide(match: Pick<MatchWithRelations, "athlete_a_id" | "athlete_b_id" | "winner_athlete_id">): "A" | "B" | null {
+  if (match.winner_athlete_id === null) return null;
+  if (match.winner_athlete_id === match.athlete_a_id) return "A";
+  if (match.winner_athlete_id === match.athlete_b_id) return "B";
+  return null;
+}
+
+// Combat vu depuis la compétition : les deux athlètes dans l'ordre publié
+// par la source, scores tels que stockés, vainqueur désigné par winnerSide.
+// Un combat logique = une entrée, quel que soit le nombre de représentations.
+export function toResultFightView(match: MatchWithRelations) {
+  return {
+    id: match.id,
+    category: match.category_label,
+    stage: match.bracket_stage,
+    contestNumber: match.contest_number,
+    athleteA: toAthleteSummary(match.athlete_a),
+    athleteB: toAthleteSummary(match.athlete_b),
+    scoreA: match.score_a,
+    scoreB: match.score_b,
+    winnerSide: winnerSide(match),
+    method: match.result_method,
+    sources: match.sources.map((s) => ({ source: s.source, externalId: s.source_external_id, sourceUrl: s.source_url })),
+  };
+}
+
+// Ordre sportif des catégories quand le label le permet SANS interprétation :
+// "<Préfixe> -58kg" / "<Préfixe> +80kg" (préfixe tel quel, sensible à la
+// casse, jamais fusionné) ⇒ par préfixe, puis poids croissant, "+" après "-"
+// au même poids. Tout autre label (ex. ".1 (QF) / Men -80kg") vient ensuite,
+// en ordre alphabétique. Ordre total et déterministe.
+const WEIGHT_CATEGORY = /^([A-Za-z]+(?: [A-Za-z]+)*) ([+-])(\d+)kg$/;
+// Comparaison par code point (jamais localeCompare, dont le résultat dépend
+// de la locale ICU de la machine) : même ordre partout.
+function byCodePoint(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+export function compareCategoryLabels(a: string, b: string): number {
+  const ma = WEIGHT_CATEGORY.exec(a);
+  const mb = WEIGHT_CATEGORY.exec(b);
+  if (ma && !mb) return -1;
+  if (!ma && mb) return 1;
+  if (ma && mb) {
+    return (
+      byCodePoint(ma[1], mb[1]) ||
+      Number(ma[3]) - Number(mb[3]) ||
+      (ma[2] === mb[2] ? 0 : ma[2] === "-" ? -1 : 1) ||
+      byCodePoint(a, b)
+    );
+  }
+  return byCodePoint(a, b);
 }

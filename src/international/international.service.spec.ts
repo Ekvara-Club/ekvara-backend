@@ -1,6 +1,16 @@
 import { NotFoundException } from "@nestjs/common";
 import { AthleteWithSources, InternationalRepository, MatchWithRelations } from "./international.repository";
-import { athleteResult, InternationalService, toAthleteFightView, toAthleteView, toMatchView, toRecordedStats } from "./international.service";
+import {
+  athleteResult,
+  compareCategoryLabels,
+  InternationalService,
+  toAthleteFightView,
+  toAthleteView,
+  toMatchView,
+  toRecordedStats,
+  toResultFightView,
+  winnerSide,
+} from "./international.service";
 
 const now = new Date("2026-09-19T10:00:00Z");
 
@@ -175,6 +185,8 @@ describe("InternationalService", () => {
       | "searchAthletes"
       | "countAthleteFights"
       | "findAthleteCompetitionHistory"
+      | "summarizeCompetitionResults"
+      | "findCompetitionCategoryMatches"
     >
   >;
   let service: InternationalService;
@@ -188,6 +200,8 @@ describe("InternationalService", () => {
       searchAthletes: jest.fn(),
       countAthleteFights: jest.fn(),
       findAthleteCompetitionHistory: jest.fn(),
+      summarizeCompetitionResults: jest.fn(),
+      findCompetitionCategoryMatches: jest.fn(),
     };
     service = new InternationalService(repository as unknown as InternationalRepository);
   });
@@ -298,6 +312,121 @@ describe("InternationalService", () => {
     expect(result.items[0].matches.map((m) => m.id)).toEqual(["r32", "sf", "final"]);
     expect(result.items[1]).toMatchObject({ fights: 1, wins: 0, losses: 0, unknown: 1, categories: ["Women -53kg"] });
     expect(result.items[0].competition).toEqual({ id: "c1", name: "Exemple 2026", dateDebut: now, dateFin: null, lieu: null, ville: "Paris", pays: "France" });
+  });
+});
+
+describe("InternationalService — résultats d'événement", () => {
+  let repository: jest.Mocked<Pick<InternationalRepository, "competitionExists" | "summarizeCompetitionResults" | "findCompetitionCategoryMatches">>;
+  let service: InternationalService;
+
+  beforeEach(() => {
+    repository = { competitionExists: jest.fn(), summarizeCompetitionResults: jest.fn(), findCompetitionCategoryMatches: jest.fn() };
+    service = new InternationalService(repository as unknown as InternationalRepository);
+  });
+
+  it("competition inconnue ⇒ 404, sans requêter les résultats", async () => {
+    repository.competitionExists.mockResolvedValue(false);
+    await expect(service.getCompetitionResultsSummary("c")).rejects.toBeInstanceOf(NotFoundException);
+    expect(repository.summarizeCompetitionResults).not.toHaveBeenCalled();
+  });
+
+  it("résumé : totaux + catégories dans l'ordre sportif déterministe, jamais la liste des combats", async () => {
+    repository.competitionExists.mockResolvedValue(true);
+    repository.summarizeCompetitionResults.mockResolvedValue({
+      fights: 10,
+      athletes: 12,
+      categories: [
+        { category_label: "Women -49kg", fights: 2, athletes: 3 },
+        { category_label: ".1 (QF) / Men -80kg", fights: 1, athletes: 2 },
+        { category_label: "Men +80kg", fights: 3, athletes: 4 },
+        { category_label: "Men -80kg", fights: 2, athletes: 3 },
+        { category_label: "Men -58kg", fights: 2, athletes: 3 },
+      ],
+    });
+    const result = await service.getCompetitionResultsSummary("c1");
+    expect(result).toEqual({
+      competitionId: "c1",
+      matchCount: 10,
+      athleteCount: 12,
+      categories: [
+        { label: "Men -58kg", fightCount: 2, athleteCount: 3 },
+        { label: "Men -80kg", fightCount: 2, athleteCount: 3 },
+        { label: "Men +80kg", fightCount: 3, athleteCount: 4 },
+        { label: "Women -49kg", fightCount: 2, athleteCount: 3 },
+        { label: ".1 (QF) / Men -80kg", fightCount: 1, athleteCount: 2 },
+      ],
+    });
+    expect(repository.findCompetitionCategoryMatches).not.toHaveBeenCalled();
+  });
+
+  it("catégorie : combats groupés par tour dans l'ordre du tableau (R32 → F), tour inconnu en dernier", async () => {
+    repository.competitionExists.mockResolvedValue(true);
+    repository.findCompetitionCategoryMatches.mockResolvedValue([
+      matchRow({ id: "f", bracket_stage: "F", contest_number: 900 }),
+      matchRow({ id: "qf2", bracket_stage: "QF", contest_number: 402 }),
+      matchRow({ id: "x", bracket_stage: null, contest_number: 1 }),
+      matchRow({ id: "qf1", bracket_stage: "QF", contest_number: 401 }),
+      matchRow({ id: "r32", bracket_stage: "R32", contest_number: 101 }),
+    ]);
+    const result = await service.getCompetitionCategoryResults("c1", "Women -49kg");
+    expect(repository.findCompetitionCategoryMatches).toHaveBeenCalledWith("c1", "Women -49kg");
+    expect(result.fightCount).toBe(5);
+    expect(result.rounds.map((r) => [r.stage, r.fights.map((f) => f.id)])).toEqual([
+      ["R32", ["r32"]],
+      ["QF", ["qf1", "qf2"]],
+      ["F", ["f"]],
+      [null, ["x"]],
+    ]);
+  });
+
+  it("catégorie absente de la compétition ⇒ 404", async () => {
+    repository.competitionExists.mockResolvedValue(true);
+    repository.findCompetitionCategoryMatches.mockResolvedValue([]);
+    await expect(service.getCompetitionCategoryResults("c1", "Men -99kg")).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe("winnerSide / toResultFightView", () => {
+  it("vainqueur = A ⇒ A ; = B ⇒ B ; absent ou étranger au combat ⇒ null (jamais déduit des scores)", () => {
+    const fight = { athlete_a_id: "a1", athlete_b_id: "a2" };
+    expect(winnerSide({ ...fight, winner_athlete_id: "a1" })).toBe("A");
+    expect(winnerSide({ ...fight, winner_athlete_id: "a2" })).toBe("B");
+    expect(winnerSide({ ...fight, winner_athlete_id: null })).toBeNull();
+    expect(winnerSide({ ...fight, winner_athlete_id: "zz" })).toBeNull();
+  });
+
+  it("vue combat : A/B dans l'ordre publié, scores stockés, méthode, provenance complète ; vainqueur au score inférieur conservé", () => {
+    const rep = (n: number) => ({ id: `ms${n}`, competition_match_id: "m1", source: "world_taekwondo_results", source_external_id: `copie-${n}`, source_url: null, created_at: now });
+    const view = toResultFightView(matchRow({ score_a: 0, score_b: 2, winner_athlete_id: "a1", result_method: "RSC", sources: [rep(1), rep(2), rep(3)] }));
+    expect(view).toEqual({
+      id: "m1",
+      category: "Women -49kg",
+      stage: "F",
+      contestNumber: 140,
+      athleteA: { id: "a1", displayName: "Alice EXEMPLE", countryCode: "FRA" },
+      athleteB: { id: "a2", displayName: "Bruno TESTEUR", countryCode: "KOR" },
+      scoreA: 0,
+      scoreB: 2,
+      winnerSide: "A",
+      method: "RSC",
+      sources: [1, 2, 3].map((n) => ({ source: "world_taekwondo_results", externalId: `copie-${n}`, sourceUrl: null })),
+    });
+  });
+});
+
+describe("compareCategoryLabels", () => {
+  it("préfixe puis poids croissant, - avant + au même poids ; labels non structurés ensuite (alphabétique) ; casse jamais fusionnée", () => {
+    const labels = ["Women +67kg", "MEN -58kg", "Men -58kg", ".2 (QF) / Men -80kg", "Men +80kg", "Men -80kg", "Women -49kg", "Open"];
+    expect([...labels].sort(compareCategoryLabels)).toEqual([
+      "MEN -58kg",
+      "Men -58kg",
+      "Men -80kg",
+      "Men +80kg",
+      "Women -49kg",
+      "Women +67kg",
+      ".2 (QF) / Men -80kg",
+      "Open",
+    ]);
   });
 });
 

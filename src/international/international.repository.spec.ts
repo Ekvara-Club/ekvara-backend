@@ -742,4 +742,45 @@ describe("InternationalRepository (intégration Postgres)", () => {
       expect(await repository.findAthleteCompetitionHistory(hero, 3, 1)).toMatchObject({ competitions: [], matches: [], total: 2 });
     });
   });
+
+  describe("résultats d'événement (#17)", () => {
+    it("résumé : combats LOGIQUES (copies source non recomptées), athlètes distincts, par catégorie ; filtre catégorie exact ; inscrits distincts des combats", async () => {
+      const competition = await canonicalCompetition("ev17");
+      const a = (await athlete("ev17-a", "Ev A", "FRA")).athleteId;
+      const b = (await athlete("ev17-b", "Ev B", "KOR")).athleteId;
+      const c = (await athlete("ev17-c", "Ev C", null)).athleteId;
+      const base = { competitionId: competition.id, source: WT_RESULTS_SOURCE, resultMethod: "PTF", scoreA: 2, scoreB: 0 };
+      // Men -68kg : 1 combat publié 3 fois + 1 autre combat ; Women -49kg : 1 combat
+      for (const label of ["ev17-m1", "ev17-m1-bis", "ev17-m1-ter"]) {
+        await repository.saveMatchRepresentation({ ...base, sourceExternalId: ext(label), categoryLabel: "Men -68kg", bracketStage: "SF", contestNumber: 7, athleteAId: a, athleteBId: b, winnerAthleteId: a });
+      }
+      await repository.saveMatchRepresentation({ ...base, sourceExternalId: ext("ev17-m2"), categoryLabel: "Men -68kg", bracketStage: "F", contestNumber: 9, athleteAId: a, athleteBId: c, winnerAthleteId: c });
+      await repository.saveMatchRepresentation({ ...base, sourceExternalId: ext("ev17-w1"), categoryLabel: "Women -49kg", bracketStage: "F", contestNumber: 3, athleteAId: b, athleteBId: c, winnerAthleteId: b });
+      // Inscrit publié (competition_entry) : jamais compté comme combat ni athlète de résultats.
+      await prisma.competition_entry.create({ data: { competition_id: competition.id, source: "martial_events", source_category_raw_label: "Senior -68kg", participant_name: "Inscrit Seul" } });
+
+      const summary = await repository.summarizeCompetitionResults(competition.id);
+      expect(summary.fights).toBe(3);
+      expect(summary.athletes).toBe(3);
+      const byLabel = Object.fromEntries(summary.categories.map((cat) => [cat.category_label, cat]));
+      expect(byLabel["Men -68kg"]).toMatchObject({ fights: 2, athletes: 3 });
+      expect(byLabel["Women -49kg"]).toMatchObject({ fights: 1, athletes: 2 });
+
+      const men = await repository.findCompetitionCategoryMatches(competition.id, "Men -68kg");
+      expect(men).toHaveLength(2);
+      expect(men.every((m) => m.category_label === "Men -68kg")).toBe(true);
+      expect(men.find((m) => m.contest_number === 7)!.sources).toHaveLength(3);
+      expect(await repository.findCompetitionCategoryMatches(competition.id, "men -68kg")).toHaveLength(0);
+
+      // Fiche détail : inscrits et combats comptés séparément, dans la même requête.
+      const { CompetitionsRepository } = await import("../competitions/competitions.repository");
+      const detail = await new CompetitionsRepository(prisma).findById(competition.id);
+      expect(detail!.counts).toEqual({ entries: 1, matches: 3 });
+    });
+
+    it("compétition sans combat : résumé vide (0, 0, aucune catégorie)", async () => {
+      const competition = await canonicalCompetition("ev17-empty");
+      expect(await repository.summarizeCompetitionResults(competition.id)).toEqual({ categories: [], fights: 0, athletes: 0 });
+    });
+  });
 });

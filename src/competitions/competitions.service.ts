@@ -200,6 +200,7 @@ function toCompetitionDetailView(
     source: string | null;
     source_external_id: string | null;
     all_sources: { source: string; source_url: string | null }[];
+    counts: { entries: number; matches: number };
   },
 ) {
   return {
@@ -219,5 +220,13 @@ function toCompetitionDetailView(
     // (nom + lien externe si connu), en plus de source/sourceExternalId
     // (primaire, historique, jamais retiré) — jamais l'id technique exposé.
     sources: competition.all_sources.map((s) => ({ source: s.source, sourceUrl: s.source_url })),
+    // Ticket "Competition Detail V2" : jeux de données réellement présents,
+    // pour que la fiche n'affiche que les sections utiles. Les inscrits
+    // (competition_entry) et les combats (competition_match) restent deux
+    // données distinctes, jamais dérivées l'une de l'autre.
+    availability: {
+      entryCount: competition.counts.entries,
+      matchCount: competition.counts.matches,
+    },
   };
 }
