@@ -4,6 +4,8 @@ import { InternationalService } from "./international.service";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
+const DEFAULT_COMPETITIONS_LIMIT = 10;
+const MAX_SEARCH_LENGTH = 100;
 
 export function parsePositiveInt(value: string | undefined, name: string, fallback: number, max?: number): number {
   if (value === undefined || value === "") {
@@ -24,6 +26,21 @@ export function parsePositiveInt(value: string | undefined, name: string, fallba
 export class InternationalAthletesController {
   constructor(private readonly internationalService: InternationalService) {}
 
+  // Recherche d'athlètes externes par nom (search optionnel, trim ; vide ⇒
+  // liste complète paginée, jamais tout le catalogue d'un coup).
+  @Get()
+  search(@Query("search") searchParam?: string, @Query("page") pageParam?: string, @Query("limit") limitParam?: string) {
+    const search = searchParam?.trim() || undefined;
+    if (search !== undefined && search.length > MAX_SEARCH_LENGTH) {
+      throw new BadRequestException(`Le paramètre search ne peut pas dépasser ${MAX_SEARCH_LENGTH} caractères`);
+    }
+    return this.internationalService.searchAthletes(
+      search,
+      parsePositiveInt(pageParam, "page", 1),
+      parsePositiveInt(limitParam, "limit", DEFAULT_LIMIT, MAX_LIMIT),
+    );
+  }
+
   @Get(":id")
   findOne(@Param("id", ParseUUIDPipe) id: string) {
     return this.internationalService.getAthlete(id);
@@ -39,6 +56,21 @@ export class InternationalAthletesController {
       id,
       parsePositiveInt(pageParam, "page", 1),
       parsePositiveInt(limitParam, "limit", DEFAULT_LIMIT, MAX_LIMIT),
+    );
+  }
+
+  // Historique groupé par compétition, paginé par compétition (une
+  // compétition n'est jamais coupée entre deux pages).
+  @Get(":id/competitions")
+  findCompetitions(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Query("page") pageParam?: string,
+    @Query("limit") limitParam?: string,
+  ) {
+    return this.internationalService.getAthleteCompetitions(
+      id,
+      parsePositiveInt(pageParam, "page", 1),
+      parsePositiveInt(limitParam, "limit", DEFAULT_COMPETITIONS_LIMIT, MAX_LIMIT),
     );
   }
 }

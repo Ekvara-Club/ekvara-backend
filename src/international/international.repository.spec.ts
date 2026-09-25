@@ -644,4 +644,87 @@ describe("InternationalRepository (intégration Postgres)", () => {
       expect(() => guarded.competition).not.toThrow();
     });
   });
+
+  describe("lecture UI : recherche, bilan, historique par compétition (#16)", () => {
+    // Nom unique au run : la recherche ne peut remonter que les athlètes de ce test.
+    const tag = `Zqx${runId}`;
+
+    async function fight(competitionId: string, label: string, a: string, b: string, winner: string | null, extra: Partial<Parameters<InternationalRepository["saveMatchRepresentation"]>[0]> = {}) {
+      return repository.saveMatchRepresentation({
+        competitionId,
+        source: WT_RESULTS_SOURCE,
+        sourceExternalId: ext(label),
+        sourceUrl: `https://results.worldtaekwondo.org/x/${ext(label)}`,
+        categoryLabel: "Men -68kg",
+        bracketStage: "R16",
+        contestNumber: 100 + Math.floor(Math.random() * 800),
+        athleteAId: a,
+        athleteBId: b,
+        scoreA: 2,
+        scoreB: 0,
+        winnerAthleteId: winner,
+        resultMethod: "PTF",
+        ...extra,
+      });
+    }
+
+    async function scenario() {
+      const hero = (await athlete(`ui-hero`, `${tag} HERO`, "FRA")).athleteId;
+      const rivalB = (await athlete(`ui-b`, `${tag.toUpperCase()} bravo`, "KOR")).athleteId;
+      const rivalC = (await athlete(`ui-c`, `${tag} Charlie`, null)).athleteId;
+      const outsider = (await athlete(`ui-out`, `Autre ${runId}`, "USA")).athleteId;
+      const older = await canonicalCompetition("ui-older");
+      const newer = await canonicalCompetition("ui-newer");
+      // older : hero gagne (côté A), puis perd (côté B) ; combat publié 3 fois (1 logique)
+      await fight(older.id, "ui-f1", hero, rivalB, hero, { contestNumber: 11, bracketStage: "R16" });
+      await fight(older.id, "ui-f1-copy1", hero, rivalB, hero, { contestNumber: 11, bracketStage: "R16" });
+      await fight(older.id, "ui-f1-copy2", hero, rivalB, hero, { contestNumber: 11, bracketStage: "R16" });
+      await fight(older.id, "ui-f2", rivalC, hero, rivalC, { contestNumber: 22, bracketStage: "QF", scoreA: 2, scoreB: 1 });
+      // newer : hero gagne côté B ; combat sans vainqueur
+      await fight(newer.id, "ui-f3", rivalC, hero, hero, { contestNumber: 33, scoreA: 0, scoreB: 2 });
+      await fight(newer.id, "ui-f4", hero, rivalC, null, { contestNumber: 44, scoreA: null, scoreB: null, resultMethod: null });
+      // combat sans hero (isolation)
+      await fight(newer.id, "ui-f5", rivalB, outsider, rivalB, { contestNumber: 55 });
+      return { hero, rivalB, rivalC, outsider, older, newer };
+    }
+
+    it("searchAthletes : insensible à la casse, ordre nom puis id, pagination, nombre de combats LOGIQUES", async () => {
+      const { hero, rivalB, rivalC } = await scenario();
+      const page1 = await repository.searchAthletes(tag.toLowerCase(), 1, 2);
+      expect(page1.total).toBe(3);
+      const page2 = await repository.searchAthletes(tag.toLowerCase(), 2, 2);
+      const all = [...page1.items, ...page2.items];
+      const names = all.map((a) => a.display_name);
+      expect(names).toEqual([...names].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0)));
+      expect(new Set(all.map((a) => a.id))).toEqual(new Set([hero, rivalB, rivalC]));
+      const heroRow = all.find((a) => a.id === hero)!;
+      // 4 combats logiques (dont un publié 3 fois), jamais 6 représentations
+      expect(heroRow._count.matches_as_a + heroRow._count.matches_as_b).toBe(4);
+      expect(heroRow.sources[0]).toEqual({ source: WT_RESULTS_SOURCE, source_external_id: ext("ui-hero"), source_url: expect.any(String) });
+      expect(await repository.searchAthletes(`${tag}-inexistant`, 1, 20)).toEqual({ items: [], total: 0, page: 1, limit: 20 });
+    });
+
+    it("countAthleteFights : V/D/inconnu d'après le vainqueur, compétitions distinctes, copies source jamais recomptées", async () => {
+      const { hero, rivalC } = await scenario();
+      expect(await repository.countAthleteFights(hero)).toEqual({ fights: 4, wins: 2, losses: 1, unknown: 1, competitions: 2 });
+      expect(await repository.countAthleteFights(rivalC)).toEqual({ fights: 3, wins: 1, losses: 1, unknown: 1, competitions: 2 });
+    });
+
+    it("findAthleteCompetitionHistory : compétitions récentes d'abord, paginées par compétition, uniquement les combats de l'athlète", async () => {
+      const { hero, older, newer } = await scenario();
+      const p1 = await repository.findAthleteCompetitionHistory(hero, 1, 1);
+      expect(p1.total).toBe(2);
+      expect(p1.competitions.map((c) => c.id)).toEqual([newer.id]);
+      expect(p1.competitions[0]).toMatchObject({ nom: newer.nom, ville: "Testville" });
+      // f5 (sans hero) exclu : isolation
+      expect(p1.matches.map((m) => m.source_external_id).sort()).toEqual([ext("ui-f3"), ext("ui-f4")].sort());
+      const p2 = await repository.findAthleteCompetitionHistory(hero, 2, 1);
+      expect(p2.competitions.map((c) => c.id)).toEqual([older.id]);
+      // f1 publié 3 fois ⇒ UN combat, avec ses 3 représentations
+      expect(p2.matches).toHaveLength(2);
+      const f1 = p2.matches.find((m) => m.source_external_id === ext("ui-f1"))!;
+      expect(f1.sources).toHaveLength(3);
+      expect(await repository.findAthleteCompetitionHistory(hero, 3, 1)).toMatchObject({ competitions: [], matches: [], total: 2 });
+    });
+  });
 });

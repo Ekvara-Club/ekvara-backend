@@ -70,11 +70,37 @@ const MATCH_INCLUDE = {
   winner: true,
   // TOUTES les représentations source du combat (provenance complète).
   sources: { orderBy: [{ created_at: "asc" as const }, { id: "asc" as const }] },
-  competition: { select: { id: true, nom: true, date_debut: true, date_fin: true } },
+  competition: { select: { id: true, nom: true, date_debut: true, date_fin: true, lieu: true, ville: true, pays: true } },
 } satisfies Prisma.competition_matchInclude;
+
+// Résultat de recherche : identité publique + provenance, et le nombre de
+// combats logiques (competition_match, jamais leurs représentations source)
+// calculé dans la MÊME requête (_count), sans N+1.
+const ATHLETE_SEARCH_SELECT = {
+  id: true,
+  display_name: true,
+  country_code: true,
+  sources: {
+    select: { source: true, source_external_id: true, source_url: true },
+    orderBy: [{ created_at: "asc" as const }, { id: "asc" as const }],
+  },
+  _count: { select: { matches_as_a: true, matches_as_b: true } },
+} satisfies Prisma.external_athleteSelect;
 
 export type MatchWithRelations = Prisma.competition_matchGetPayload<{ include: typeof MATCH_INCLUDE }>;
 export type AthleteWithSources = Prisma.external_athleteGetPayload<{ include: typeof ATHLETE_INCLUDE }>;
+export type AthleteSearchRow = Prisma.external_athleteGetPayload<{ select: typeof ATHLETE_SEARCH_SELECT }>;
+
+// Compteurs de combats LOGIQUES d'un athlète, dérivés uniquement du
+// vainqueur enregistré (jamais des scores) : wins = vainqueur = l'athlète,
+// losses = vainqueur renseigné et différent, unknown = aucun vainqueur.
+export interface AthleteFightCounts {
+  fights: number;
+  wins: number;
+  losses: number;
+  unknown: number;
+  competitions: number;
+}
 
 @Injectable()
 export class InternationalRepository {
@@ -410,6 +436,62 @@ export class InternationalRepository {
   async findMatchesByAthlete(athleteId: string, page: number, limit: number) {
     const where: Prisma.competition_matchWhereInput = { OR: [{ athlete_a_id: athleteId }, { athlete_b_id: athleteId }] };
     return this.paginateMatches(where, page, limit);
+  }
+
+  // Recherche par nom (insensible à la casse, même convention que
+  // GET /competitions?search=). Ordre déterministe : nom puis id.
+  async searchAthletes(search: string | undefined, page: number, limit: number) {
+    const where: Prisma.external_athleteWhereInput = search ? { display_name: { contains: search, mode: "insensitive" } } : {};
+    const [items, total] = await Promise.all([
+      this.prisma.external_athlete.findMany({
+        where,
+        select: ATHLETE_SEARCH_SELECT,
+        orderBy: [{ display_name: "asc" }, { id: "asc" }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.external_athlete.count({ where }),
+    ]);
+    return { items, total, page, limit };
+  }
+
+  async countAthleteFights(athleteId: string): Promise<AthleteFightCounts> {
+    const involved: Prisma.competition_matchWhereInput = { OR: [{ athlete_a_id: athleteId }, { athlete_b_id: athleteId }] };
+    const [fights, wins, losses, unknown, competitions] = await Promise.all([
+      this.prisma.competition_match.count({ where: involved }),
+      this.prisma.competition_match.count({ where: { ...involved, winner_athlete_id: athleteId } }),
+      this.prisma.competition_match.count({ where: { ...involved, winner_athlete_id: { not: null }, NOT: { winner_athlete_id: athleteId } } }),
+      this.prisma.competition_match.count({ where: { ...involved, winner_athlete_id: null } }),
+      this.prisma.competition_match.groupBy({ by: ["competition_id"], where: involved }),
+    ]);
+    return { fights, wins, losses, unknown, competitions: competitions.length };
+  }
+
+  // Historique paginé PAR COMPÉTITION (jamais une compétition coupée entre
+  // deux pages) : 1) compétitions distinctes de l'athlète, 2) la page de
+  // compétitions triée (date_debut desc, id), 3) tous les combats de
+  // l'athlète dans ces compétitions en une requête. Nombre de requêtes
+  // constant, quelle que soit la taille de la page.
+  async findAthleteCompetitionHistory(athleteId: string, page: number, limit: number) {
+    const involved: Prisma.competition_matchWhereInput = { OR: [{ athlete_a_id: athleteId }, { athlete_b_id: athleteId }] };
+    const groups = await this.prisma.competition_match.groupBy({ by: ["competition_id"], where: involved });
+    const allIds = groups.map((g) => g.competition_id);
+    const competitions = await this.prisma.competition.findMany({
+      where: { id: { in: allIds } },
+      select: { id: true, nom: true, date_debut: true, date_fin: true, lieu: true, ville: true, pays: true },
+      orderBy: [{ date_debut: "desc" }, { id: "asc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    const matches =
+      competitions.length === 0
+        ? []
+        : await this.prisma.competition_match.findMany({
+            where: { AND: [involved, { competition_id: { in: competitions.map((c) => c.id) } }] },
+            include: MATCH_INCLUDE,
+            orderBy: [{ contest_number: { sort: "asc", nulls: "last" } }, { id: "asc" }],
+          });
+    return { competitions, matches, total: allIds.length, page, limit };
   }
 
   async findMatchesByCompetition(competitionId: string, page: number, limit: number) {
