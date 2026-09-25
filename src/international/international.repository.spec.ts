@@ -704,6 +704,21 @@ describe("InternationalRepository (intégration Postgres)", () => {
       expect(await repository.searchAthletes(`${tag}-inexistant`, 1, 20)).toEqual({ items: [], total: 0, page: 1, limit: 20 });
     });
 
+    it("searchAthletes sort=fights : combats logiques décroissants puis nom, pagination stable, même ensemble que le tri par nom", async () => {
+      const { hero, rivalB, rivalC } = await scenario();
+      // hero 4 combats, rivalC 3, rivalB 2 (f1 publié 3 fois compte pour 1)
+      const all = await repository.searchAthletes(tag, 1, 10, "fights");
+      expect(all.total).toBe(3);
+      expect(all.items.map((a) => a.id)).toEqual([hero, rivalC, rivalB]);
+      expect(all.items.map((a) => a._count.matches_as_a + a._count.matches_as_b)).toEqual([4, 3, 2]);
+      const p2 = await repository.searchAthletes(tag, 2, 2, "fights");
+      expect(p2.items.map((a) => a.id)).toEqual([rivalB]);
+      // Même ensemble que la recherche par nom, seul l'ordre change.
+      const byName = await repository.searchAthletes(tag, 1, 10, "name");
+      expect(byName.total).toBe(all.total);
+      expect(new Set(byName.items.map((a) => a.id))).toEqual(new Set(all.items.map((a) => a.id)));
+    });
+
     it("countAthleteFights : V/D/inconnu d'après le vainqueur, compétitions distinctes, copies source jamais recomptées", async () => {
       const { hero, rivalC } = await scenario();
       expect(await repository.countAthleteFights(hero)).toEqual({ fights: 4, wins: 2, losses: 1, unknown: 1, competitions: 2 });

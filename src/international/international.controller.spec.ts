@@ -121,13 +121,21 @@ describe("International controllers (HTTP)", () => {
         .set("Cookie", cookie)
         .expect(200);
       expect(res.body).toEqual({ items: [], total: 0, page: 1, limit: 20 });
-      expect(service.searchAthletes).toHaveBeenCalledWith("kim", 1, 20);
+      expect(service.searchAthletes).toHaveBeenCalledWith("kim", 1, 20, "name");
     });
 
     it("search absent ou blanc ⇒ undefined (liste paginée), page/limit transmis", async () => {
       service.searchAthletes.mockResolvedValue({ items: [], total: 0, page: 3, limit: 5 });
       await request(app.getHttpServer()).get("/international-athletes?search=%20%20&page=3&limit=5").set("Cookie", cookie).expect(200);
-      expect(service.searchAthletes).toHaveBeenCalledWith(undefined, 3, 5);
+      expect(service.searchAthletes).toHaveBeenCalledWith(undefined, 3, 5, "name");
+    });
+
+    it("sort=fights transmis (liste de découverte) ; toute autre valeur -> 400", async () => {
+      service.searchAthletes.mockResolvedValue({ items: [], total: 0, page: 1, limit: 6 });
+      await request(app.getHttpServer()).get("/international-athletes?sort=fights&limit=6").set("Cookie", cookie).expect(200);
+      expect(service.searchAthletes).toHaveBeenCalledWith(undefined, 1, 6, "fights");
+      await request(app.getHttpServer()).get("/international-athletes?sort=rating").set("Cookie", cookie).expect(400);
+      expect(service.searchAthletes).toHaveBeenCalledTimes(1);
     });
 
     it("search de plus de 100 caractères -> 400", async () => {

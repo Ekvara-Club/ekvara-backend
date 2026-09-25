@@ -27,17 +27,28 @@ export class InternationalAthletesController {
   constructor(private readonly internationalService: InternationalService) {}
 
   // Recherche d'athlètes externes par nom (search optionnel, trim ; vide ⇒
-  // liste complète paginée, jamais tout le catalogue d'un coup).
+  // liste complète paginée, jamais tout le catalogue d'un coup). sort=fights
+  // (optionnel) : combats recensés décroissants puis nom — sert la liste de
+  // découverte déterministe de l'explorateur. Défaut : nom.
   @Get()
-  search(@Query("search") searchParam?: string, @Query("page") pageParam?: string, @Query("limit") limitParam?: string) {
+  search(
+    @Query("search") searchParam?: string,
+    @Query("page") pageParam?: string,
+    @Query("limit") limitParam?: string,
+    @Query("sort") sortParam?: string,
+  ) {
     const search = searchParam?.trim() || undefined;
     if (search !== undefined && search.length > MAX_SEARCH_LENGTH) {
       throw new BadRequestException(`Le paramètre search ne peut pas dépasser ${MAX_SEARCH_LENGTH} caractères`);
+    }
+    if (sortParam !== undefined && sortParam !== "name" && sortParam !== "fights") {
+      throw new BadRequestException('Le paramètre sort doit valoir "name" ou "fights"');
     }
     return this.internationalService.searchAthletes(
       search,
       parsePositiveInt(pageParam, "page", 1),
       parsePositiveInt(limitParam, "limit", DEFAULT_LIMIT, MAX_LIMIT),
+      sortParam ?? "name",
     );
   }
 

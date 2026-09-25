@@ -237,7 +237,7 @@ describe("InternationalService", () => {
       limit: 20,
     });
     const result = await service.searchAthletes("alice", 1, 20);
-    expect(repository.searchAthletes).toHaveBeenCalledWith("alice", 1, 20);
+    expect(repository.searchAthletes).toHaveBeenCalledWith("alice", 1, 20, "name");
     expect(result).toEqual({
       items: [
         {

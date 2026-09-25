@@ -90,6 +90,7 @@ const ATHLETE_SEARCH_SELECT = {
 export type MatchWithRelations = Prisma.competition_matchGetPayload<{ include: typeof MATCH_INCLUDE }>;
 export type AthleteWithSources = Prisma.external_athleteGetPayload<{ include: typeof ATHLETE_INCLUDE }>;
 export type AthleteSearchRow = Prisma.external_athleteGetPayload<{ select: typeof ATHLETE_SEARCH_SELECT }>;
+export type AthleteSearchSort = "name" | "fights";
 
 // Compteurs de combats LOGIQUES d'un athlète, dérivés uniquement du
 // vainqueur enregistré (jamais des scores) : wins = vainqueur = l'athlète,
@@ -439,20 +440,48 @@ export class InternationalRepository {
   }
 
   // Recherche par nom (insensible à la casse, même convention que
-  // GET /competitions?search=). Ordre déterministe : nom puis id.
-  async searchAthletes(search: string | undefined, page: number, limit: number) {
+  // GET /competitions?search=). Ordre déterministe : nom puis id ; ou, avec
+  // sort = "fights", nombre de combats LOGIQUES décroissant puis nom puis id
+  // (simple volume recensé, jamais un score/classement).
+  async searchAthletes(search: string | undefined, page: number, limit: number, sort: AthleteSearchSort = "name") {
     const where: Prisma.external_athleteWhereInput = search ? { display_name: { contains: search, mode: "insensitive" } } : {};
-    const [items, total] = await Promise.all([
-      this.prisma.external_athlete.findMany({
-        where,
-        select: ATHLETE_SEARCH_SELECT,
-        orderBy: [{ display_name: "asc" }, { id: "asc" }],
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.external_athlete.count({ where }),
-    ]);
-    return { items, total, page, limit };
+    const total = this.prisma.external_athlete.count({ where });
+
+    if (sort === "fights") {
+      // Prisma ne sait pas trier sur la SOMME de deux comptes de relations :
+      // les ids de la page viennent d'un agrégat SQL, puis le même select
+      // que la recherche par nom (ordre de la page restauré en mémoire).
+      // Même motif que Prisma `contains` (non échappé) : les deux tris
+      // renvoient exactement le même ensemble d'athlètes.
+      const pattern = search ? `%${search}%` : null;
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        WITH fights AS (
+          SELECT athlete_id, COUNT(*) AS n FROM (
+            SELECT athlete_a_id AS athlete_id FROM competition_match
+            UNION ALL
+            SELECT athlete_b_id FROM competition_match
+          ) sides GROUP BY athlete_id
+        )
+        SELECT a.id FROM external_athlete a
+        LEFT JOIN fights f ON f.athlete_id = a.id
+        WHERE ${pattern}::text IS NULL OR a.display_name ILIKE ${pattern}
+        ORDER BY COALESCE(f.n, 0) DESC, a.display_name ASC, a.id ASC
+        OFFSET ${(page - 1) * limit} LIMIT ${limit}`;
+      const ids = rows.map((r) => r.id);
+      const found = await this.prisma.external_athlete.findMany({ where: { id: { in: ids } }, select: ATHLETE_SEARCH_SELECT });
+      const byId = new Map(found.map((a) => [a.id, a]));
+      const items = ids.map((id) => byId.get(id)).filter((a): a is AthleteSearchRow => a !== undefined);
+      return { items, total: await total, page, limit };
+    }
+
+    const items = await this.prisma.external_athlete.findMany({
+      where,
+      select: ATHLETE_SEARCH_SELECT,
+      orderBy: [{ display_name: "asc" }, { id: "asc" }],
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return { items, total: await total, page, limit };
   }
 
   async countAthleteFights(athleteId: string): Promise<AthleteFightCounts> {

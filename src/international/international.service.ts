@@ -3,6 +3,7 @@ import { external_athlete as ExternalAthleteModel } from "../../generated/prisma
 import {
   AthleteFightCounts,
   AthleteSearchRow,
+  AthleteSearchSort,
   AthleteWithSources,
   InternationalRepository,
   MatchWithRelations,
@@ -12,8 +13,8 @@ import {
 export class InternationalService {
   constructor(private readonly repository: InternationalRepository) {}
 
-  async searchAthletes(search: string | undefined, page: number, limit: number) {
-    const result = await this.repository.searchAthletes(search, page, limit);
+  async searchAthletes(search: string | undefined, page: number, limit: number, sort: AthleteSearchSort = "name") {
+    const result = await this.repository.searchAthletes(search, page, limit, sort);
     return { ...result, items: result.items.map(toAthleteSearchItem) };
   }
 
