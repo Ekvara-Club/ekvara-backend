@@ -1,5 +1,5 @@
 import * as cheerio from "cheerio";
-import { ImportedCompetition } from "../imported-competition.interface";
+import { CalendarDivision, ImportedCompetition } from "../imported-competition.interface";
 
 // Un événement du calendrier WT est identifié par sa ligne <tr> "ancre" (celle qui
 // porte le lien a.listView avec le detailsKey). Cette ligne contient, grâce à
@@ -10,6 +10,15 @@ export interface WtRawEvent {
   title: string;
   location: string;
   dateTexts: string[];
+  // Une entrée par ligne source (ancre puis sous-lignes, ordre de la page) :
+  // texte brut des colonnes Date et Discipline. Optionnel pour ne pas imposer
+  // les divisions aux appelants qui construisent un WtRawEvent à la main.
+  rows?: WtRawRow[];
+}
+
+export interface WtRawRow {
+  dateText: string;
+  discipline: string;
 }
 
 const MONTHS = [
@@ -45,19 +54,22 @@ export function parseWtCalendarPage(html: string): WtRawEvent[] {
     const locationText = normalizeWhitespace(tds.eq(5).text());
 
     const dateTexts = firstDateText ? [firstDateText] : [];
+    const rows: WtRawRow[] = [{ dateText: firstDateText, discipline: normalizeWhitespace(tds.eq(1).text()) }];
 
     // Les sous-catégories (Senior/Junior/Cadet...) partagent le titre et le lieu
     // de la ligne ancre via rowspan : elles n'apportent qu'une date supplémentaire.
     let sibling = anchorTr.next("tr");
     while (sibling.length > 0 && sibling.find("a.listView").length === 0) {
-      const siblingDate = normalizeWhitespace(sibling.find("> td").eq(0).text());
+      const siblingTds = sibling.find("> td");
+      const siblingDate = normalizeWhitespace(siblingTds.eq(0).text());
+      rows.push({ dateText: siblingDate, discipline: normalizeWhitespace(siblingTds.eq(1).text()) });
       if (siblingDate) {
         dateTexts.push(siblingDate);
       }
       sibling = sibling.next("tr");
     }
 
-    events.push({ detailsKey, title, location: locationText, dateTexts });
+    events.push({ detailsKey, title, location: locationText, dateTexts, rows });
   });
 
   return events;
@@ -92,7 +104,26 @@ export function normalizeWtEvent(event: WtRawEvent, year: number): ImportedCompe
     ville,
     pays,
     niveau: "international",
+    ...(event.rows ? { divisions: event.rows.map((row) => toDivision(row, year)) } : {}),
   };
+}
+
+// Colonne Discipline conservée telle que publiée (jamais interprétée ici :
+// Kyorugi/Poomsae/tranche d'âge restent du texte source). Les dates sont
+// dérivées par le même parseDateRange que date_debut/date_fin, null si le
+// texte n'est pas reconnu (ex. "June 4 Virtual Taekwondo") — jamais devinées.
+function toDivision(row: WtRawRow, year: number): CalendarDivision {
+  const range = row.dateText ? parseDateRange(row.dateText, year) : null;
+  return {
+    dateText: row.dateText,
+    discipline: row.discipline || null,
+    start: range ? isoDay(range.start) : null,
+    end: range ? isoDay(range.end) : null,
+  };
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 // Formats rencontrés dans le calendrier WT : "February 3", "February 1-2",

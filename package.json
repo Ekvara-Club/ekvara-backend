@@ -11,7 +11,8 @@
     "test": "jest",
     "seed:exercises": "nest build && node dist/src/exercises/seed/seed-exercises.js",
     "import:wt-results": "nest build && node dist/src/international/wt-results/wtr-import.cli.js",
-    "wt:backfill": "nest build && node dist/src/international/wt-backfill/wt-backfill.cli.js"
+    "wt:backfill": "nest build && node dist/src/international/wt-backfill/wt-backfill.cli.js",
+    "wt:calendar-divisions": "nest build && node dist/src/competitions/wt-calendar-divisions.cli.js"
   },
   "keywords": [],
   "author": "",

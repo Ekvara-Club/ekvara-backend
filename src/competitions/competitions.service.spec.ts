@@ -10,7 +10,7 @@ import { ImportedCompetition } from "./importers/imported-competition.interface"
 
 describe("CompetitionsService", () => {
   let service: CompetitionsService;
-  let repository: { upsertFromSource: jest.Mock; findMany: jest.Mock; findById: jest.Mock };
+  let repository: { upsertFromSource: jest.Mock; findMany: jest.Mock; findById: jest.Mock; refreshSourceDivisions: jest.Mock };
   let entriesRepository: { syncForCompetition: jest.Mock };
   let importer: { fetchCompetitions: jest.Mock };
   let wtImporter: { fetchCompetitions: jest.Mock };
@@ -49,7 +49,7 @@ describe("CompetitionsService", () => {
   ];
 
   beforeEach(async () => {
-    repository = { upsertFromSource: jest.fn(), findMany: jest.fn(), findById: jest.fn() };
+    repository = { upsertFromSource: jest.fn(), findMany: jest.fn(), findById: jest.fn(), refreshSourceDivisions: jest.fn() };
     entriesRepository = { syncForCompetition: jest.fn() };
     importer = { fetchCompetitions: jest.fn() };
     wtImporter = { fetchCompetitions: jest.fn() };
@@ -175,6 +175,40 @@ describe("CompetitionsService", () => {
       imported: 0,
       updated: 1,
       failed: 0,
+    });
+  });
+
+  describe("refreshWorldTaekwondoDivisions (#22)", () => {
+    const division = { dateText: "June 6-7", discipline: "Kyorugi / Senior", start: "2026-06-06", end: "2026-06-07" };
+
+    it("n'écrit que les divisions des entrées connues, sans jamais passer par upsertFromSource", async () => {
+      wtImporter.fetchCompetitions.mockResolvedValue({
+        detected: 4,
+        failed: 1,
+        competitions: [
+          { ...wtCompetitions[0], divisions: [division] },
+          { ...wtCompetitions[0], sourceExternalId: "26345", divisions: [division] },
+          { ...wtCompetitions[0], sourceExternalId: "27034", nom: "Uzbekistan Open", divisions: [division] },
+        ],
+      });
+      repository.refreshSourceDivisions
+        .mockResolvedValueOnce("updated")
+        .mockResolvedValueOnce("unchanged")
+        .mockResolvedValueOnce("unknownSource");
+
+      const summary = await service.refreshWorldTaekwondoDivisions(2026);
+
+      expect(repository.upsertFromSource).not.toHaveBeenCalled();
+      expect(repository.refreshSourceDivisions).toHaveBeenCalledWith("world_taekwondo", "26345", [division]);
+      expect(summary).toEqual({
+        source: "world_taekwondo",
+        year: 2026,
+        fetched: 4,
+        updated: 1,
+        unchanged: 1,
+        unknownSources: ["27034 (Uzbekistan Open)"],
+        failed: 1,
+      });
     });
   });
 

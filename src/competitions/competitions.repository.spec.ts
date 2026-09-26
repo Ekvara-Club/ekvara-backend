@@ -346,6 +346,78 @@ describe("CompetitionsRepository (intégration Postgres)", () => {
     expect(second.competition.organisateur).toBe("Fédération Française de Taekwondo (FFTDA)");
   });
 
+  // #22 : divisions du calendrier WT persistées par source, idempotentes, sans
+  // effet sur l'identité ni sur les champs canoniques.
+  it("persiste raw_divisions d'une entrée calendrier WT et le ré-import est idempotent (mêmes UUID)", async () => {
+    const divisions = [
+      { dateText: "June 4", discipline: "Kyorugi / Cadet", start: "2027-06-04", end: "2027-06-04" },
+      { dateText: "June 6-7", discipline: "Kyorugi / Senior", start: "2027-06-06", end: "2027-06-07" },
+    ];
+    const data = fixture({
+      source: "world_taekwondo",
+      sourceExternalId: extId("wt-div"),
+      nom: "Division Test Cup",
+      dateDebut: new Date("2027-06-04T00:00:00Z"),
+      dateFin: new Date("2027-06-07T00:00:00Z"),
+      divisions,
+    });
+    const first = await upsertAndTrack(data);
+    const source1 = await prisma.competition_source.findFirstOrThrow({ where: { competition_id: first.competition.id } });
+    expect(source1.raw_divisions).toEqual(divisions);
+
+    const second = await upsertAndTrack(data);
+    const source2 = await prisma.competition_source.findFirstOrThrow({ where: { competition_id: first.competition.id } });
+    expect(second.outcome).toBe("updated");
+    expect(second.competition.id).toBe(first.competition.id);
+    expect(source2.id).toBe(source1.id);
+    expect(source2.raw_divisions).toEqual(divisions);
+    expect(await prisma.competition_source.count({ where: { source: "world_taekwondo", source_external_id: extId("wt-div") } })).toBe(1);
+  });
+
+  it("une source sans divisions (FFTDA) ne crée ni n'efface jamais raw_divisions", async () => {
+    const created = await upsertAndTrack(fixture({ sourceExternalId: extId("no-div") }));
+    const source = await prisma.competition_source.findFirstOrThrow({ where: { competition_id: created.competition.id } });
+    expect(source.raw_divisions).toBeNull();
+
+    // Même si la colonne était renseignée, un ré-import sans divisions ne l'efface pas.
+    await prisma.competition_source.update({ where: { id: source.id }, data: { raw_divisions: [{ dateText: "x", discipline: null, start: null, end: null }] } });
+    await upsertAndTrack(fixture({ sourceExternalId: extId("no-div") }));
+    const after = await prisma.competition_source.findUniqueOrThrow({ where: { id: source.id } });
+    expect(after.raw_divisions).toEqual([{ dateText: "x", discipline: null, start: null, end: null }]);
+  });
+
+  it("refreshSourceDivisions ne met à jour que raw_divisions d'une source connue, et jamais deux fois", async () => {
+    const created = await upsertAndTrack(
+      fixture({ source: "world_taekwondo", sourceExternalId: extId("refresh"), nom: "Refresh Cup", ville: "Nuremberg" }),
+    );
+    const before = await prisma.competition_source.findFirstOrThrow({ where: { competition_id: created.competition.id } });
+    const canonicalBefore = await prisma.competition.findUniqueOrThrow({ where: { id: created.competition.id } });
+    const divisions = [{ dateText: "January 1", discipline: "Poomsae", start: "2027-01-01", end: "2027-01-01" }];
+
+    expect(await repository.refreshSourceDivisions("world_taekwondo", extId("refresh"), divisions)).toBe("updated");
+    expect(await repository.refreshSourceDivisions("world_taekwondo", extId("refresh"), divisions)).toBe("unchanged");
+
+    const after = await prisma.competition_source.findUniqueOrThrow({ where: { id: before.id } });
+    expect(after.raw_divisions).toEqual(divisions);
+    expect({ ...after, raw_divisions: null }).toEqual({ ...before, raw_divisions: null });
+    expect(await prisma.competition.findUniqueOrThrow({ where: { id: created.competition.id } })).toEqual(canonicalBefore);
+  });
+
+  it("refreshSourceDivisions ne crée jamais rien pour une source inconnue", async () => {
+    // Comptages scopés (jamais globaux : la base est partagée avec les autres suites en parallèle).
+    expect(await repository.refreshSourceDivisions("world_taekwondo", extId("unknown"), [])).toBe("unknownSource");
+    expect(await prisma.competition_source.count({ where: { source_external_id: extId("unknown") } })).toBe(0);
+    expect(await prisma.competition.count({ where: { sources: { some: { source_external_id: extId("unknown") } } } })).toBe(0);
+  });
+
+  it("la contrainte base refuse un raw_divisions qui n'est pas un tableau", async () => {
+    const created = await upsertAndTrack(fixture({ sourceExternalId: extId("div-check") }));
+    const source = await prisma.competition_source.findFirstOrThrow({ where: { competition_id: created.competition.id } });
+    await expect(
+      prisma.competition_source.update({ where: { id: source.id }, data: { raw_divisions: { not: "an array" } } }),
+    ).rejects.toThrow();
+  });
+
   it("les champs raw_* de competition_source reflètent la source elle-même, même si différents du canonique", async () => {
     const dateDebut = new Date("2027-06-06T00:00:00Z");
     const first = await upsertAndTrack(

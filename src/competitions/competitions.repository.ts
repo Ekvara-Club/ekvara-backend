@@ -1,8 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { isDeepStrictEqual } from "node:util";
 import { PrismaService } from "../prisma/prisma.service";
 import { competition as CompetitionModel, Prisma } from "../../generated/prisma/client";
 import { todayUtcMidnight } from "./next-competition";
-import { ImportedCompetition } from "./importers/imported-competition.interface";
+import { CalendarDivision, ImportedCompetition } from "./importers/imported-competition.interface";
 import { matchCompetitions } from "./matching/competition-matcher";
 
 // Résultat de la logique de dédoublonnage multi-source (voir
@@ -234,6 +235,28 @@ export class CompetitionsRepository {
     return { competition, created: true, outcome: "created" };
   }
 
+  // #22 — rafraîchissement "divisions seules" : met à jour raw_divisions
+  // d'une source DÉJÀ connue et rien d'autre. Ne crée jamais de competition
+  // ni de source, ne touche ni aux champs canoniques ni aux autres raw_*.
+  // N'écrit pas si la valeur est déjà identique (ré-exécution sans écriture).
+  async refreshSourceDivisions(
+    source: string,
+    sourceExternalId: string,
+    divisions: CalendarDivision[],
+  ): Promise<"updated" | "unchanged" | "unknownSource"> {
+    const existing = await this.prisma.competition_source.findUnique({
+      where: { source_source_external_id: { source, source_external_id: sourceExternalId } },
+      select: { id: true, raw_divisions: true },
+    });
+    if (!existing) return "unknownSource";
+    if (isDeepStrictEqual(existing.raw_divisions, divisions)) return "unchanged";
+    await this.prisma.competition_source.update({
+      where: { id: existing.id },
+      data: { raw_divisions: divisions as unknown as Prisma.InputJsonValue },
+    });
+    return "updated";
+  }
+
   // Politique de fusion des champs (§7 du ticket) : une source ne peut
   // JAMAIS écraser un champ canonique déjà renseigné — elle ne peut que
   // combler un champ actuellement null. Simple, déterministe, sans table de
@@ -297,6 +320,9 @@ function rawSourcePayload(data: ImportedCompetition) {
     raw_ville: data.ville ?? null,
     raw_pays: data.pays ?? null,
     raw_niveau: data.niveau ?? null,
+    // Seul l'importeur calendrier WT fournit des divisions : les autres
+    // sources ne touchent jamais la colonne (ni écriture, ni effacement).
+    ...(data.divisions ? { raw_divisions: data.divisions as unknown as Prisma.InputJsonValue } : {}),
   };
 }
 

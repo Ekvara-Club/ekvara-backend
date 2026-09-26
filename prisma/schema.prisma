@@ -127,6 +127,10 @@ model competition_source {
   raw_ville        String? @db.VarChar(100)
   raw_pays         String? @db.VarChar(100)
   raw_niveau       String? @db.VarChar(50)
+  // Lignes Date/Discipline publiées par le calendrier WT pour CETTE entrée
+  // (#22), texte brut + dates dérivées : [{dateText, discipline, start, end}].
+  // NULL = jamais capturé (autres sources, ou entrée WT pas encore ré-importée).
+  raw_divisions    Json?
 
   // "safe" : rattachée automatiquement par matchCompetitions() ; "manual" :
   // rattachement humain futur ; null : source primaire d'une competition

@@ -78,6 +78,36 @@ export class CompetitionsService {
     return summary;
   }
 
+  // #22 — même récupération/normalisation que importWorldTaekwondo, mais
+  // n'écrit QUE competition_source.raw_divisions des entrées déjà connues :
+  // aucune création (une entrée calendrier inconnue est seulement signalée),
+  // aucun comblement de champ canonique. Sert à capturer les divisions sans
+  // mélanger ce changement avec une synchronisation du catalogue.
+  async refreshWorldTaekwondoDivisions(year: number) {
+    const { competitions, detected, failed } = await this.wtImporterService.fetchCompetitions(year);
+    let updated = 0;
+    let unchanged = 0;
+    const unknownSources: string[] = [];
+
+    for (const competition of competitions) {
+      if (!competition.divisions) continue;
+      const outcome = await this.competitionsRepository.refreshSourceDivisions(
+        competition.source,
+        competition.sourceExternalId,
+        competition.divisions,
+      );
+      if (outcome === "updated") updated++;
+      else if (outcome === "unchanged") unchanged++;
+      else unknownSources.push(`${competition.sourceExternalId} (${competition.nom})`);
+    }
+
+    const summary = { source: "world_taekwondo", year, fetched: detected, updated, unchanged, unknownSources, failed };
+    this.logger.log(
+      `Divisions WT ${year}: ${updated} mises à jour, ${unchanged} inchangées, ${unknownSources.length} entrées inconnues ignorées, ${failed} non normalisées`,
+    );
+    return summary;
+  }
+
   // Pour chaque événement découvert : fetch compétition → upsert (pipeline
   // multi-source commun) → fetch /entries → synchronise competition_entry
   // sur la competition CANONIQUE retournée par l'upsert (jamais un id

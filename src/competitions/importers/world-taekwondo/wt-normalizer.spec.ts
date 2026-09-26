@@ -180,3 +180,71 @@ describe("normalizeWtEvent", () => {
     expect(result).toBeNull();
   });
 });
+
+// #22 : colonne Discipline conservée ligne par ligne (texte brut + dates dérivées).
+describe("divisions du calendrier WT (#22)", () => {
+  const raw = (overrides: Partial<WtRawEvent>): WtRawEvent => ({
+    detailsKey: "1",
+    title: "Test Open",
+    location: "Vienna, Austria",
+    dateTexts: ["March 6"],
+    ...overrides,
+  });
+
+  it("capture Date et Discipline de chaque ligne (ancre puis sous-lignes), dans l'ordre de la page", () => {
+    const fujairah = parseWtCalendarPage(WT_FRAGMENT_FIXTURE).find((e) => e.detailsKey === "26032");
+    expect(fujairah?.rows).toEqual([
+      { dateText: "February 1-2", discipline: "Kyorugi / Senior" },
+      { dateText: "February 3", discipline: "Kyorugi / Junior" },
+      { dateText: "February 4", discipline: "Kyorugi / Cadet" },
+    ]);
+  });
+
+  it("n'attribue pas les lignes d'un événement à l'événement suivant", () => {
+    const single = parseWtCalendarPage(WT_FRAGMENT_FIXTURE).find((e) => e.detailsKey === "26999");
+    expect(single?.rows).toEqual([{ dateText: "March 6", discipline: "Poomsae" }]);
+  });
+
+  it("persiste les divisions avec dates dérivées par le même parseur que dateDebut/dateFin", () => {
+    const [fujairah] = parseWtCalendarPage(WT_FRAGMENT_FIXTURE);
+    const result = normalizeWtEvent(fujairah, 2026);
+    expect(result?.divisions).toEqual([
+      { dateText: "February 1-2", discipline: "Kyorugi / Senior", start: "2026-02-01", end: "2026-02-02" },
+      { dateText: "February 3", discipline: "Kyorugi / Junior", start: "2026-02-03", end: "2026-02-03" },
+      { dateText: "February 4", discipline: "Kyorugi / Cadet", start: "2026-02-04", end: "2026-02-04" },
+    ]);
+    // dates canoniques inchangées par la capture des divisions
+    expect(result?.dateDebut).toEqual(new Date(Date.UTC(2026, 1, 1)));
+    expect(result?.dateFin).toEqual(new Date(Date.UTC(2026, 1, 4)));
+  });
+
+  it("n'interprète jamais la discipline : une tranche d'âge seule (format 2025) reste telle quelle", () => {
+    const result = normalizeWtEvent(
+      raw({ dateTexts: ["June 6-7"], rows: [{ dateText: "June 6-7", discipline: "Senior" }] }),
+      2025,
+    );
+    expect(result?.divisions).toEqual([{ dateText: "June 6-7", discipline: "Senior", start: "2025-06-06", end: "2025-06-07" }]);
+  });
+
+  it("garde une ligne à date illisible avec start/end null, sans la deviner", () => {
+    const result = normalizeWtEvent(
+      raw({
+        dateTexts: ["June 4 Virtual Taekwondo", "June 5"],
+        rows: [
+          { dateText: "June 4 Virtual Taekwondo", discipline: "Kyorugi" },
+          { dateText: "June 5", discipline: "" },
+        ],
+      }),
+      2026,
+    );
+    expect(result?.divisions).toEqual([
+      { dateText: "June 4 Virtual Taekwondo", discipline: "Kyorugi", start: null, end: null },
+      { dateText: "June 5", discipline: null, start: "2026-06-05", end: "2026-06-05" },
+    ]);
+  });
+
+  it("sans lignes source, n'émet aucune division (la colonne n'est alors jamais touchée)", () => {
+    const result = normalizeWtEvent(raw({}), 2026);
+    expect(result).not.toHaveProperty("divisions");
+  });
+});
