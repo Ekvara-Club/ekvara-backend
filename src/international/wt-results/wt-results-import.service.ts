@@ -1,6 +1,13 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { AttachOutcome, CompetitionSourceConflictError, InternationalRepository, MatchSaveOutcome } from "../international.repository";
-import { mapResultsCompetition, WtrMappingResult } from "./wtr-competition-matcher";
+import {
+  mapResultsCompetition,
+  mapResultsCompetitionByDivisions,
+  normalizeCompetitionName,
+  resultsDisciplineFromCategories,
+  WtrCompetitionRef,
+  WtrMappingResult,
+} from "./wtr-competition-matcher";
 import { WorldTaekwondoResultsImporterService, WtrBlockedError, WtrHttpError } from "./wt-results-importer.service";
 import { competitionResultsUrl, matchUrl, profileUrl, WT_RESULTS_SOURCE, WtrMatch } from "./wtr-parser";
 
@@ -141,6 +148,39 @@ export class WtResultsImportService {
     return report;
   }
 
+  // Mapping d'UN événement Results, partagé par l'import et la discovery du
+  // backfill (même verdict aux deux étapes) : règle exacte d'abord, inchangée ;
+  // seulement si elle répond UNMATCHED, règle par divisions calendrier (#22).
+  // Les catégories Results (1 requête) ne sont lues que s'il existe au moins
+  // une candidate homonyme dont la plage contient l'événement.
+  async resolveMapping(
+    item: WtrCompetitionRef,
+    list: WtrCompetitionRef[],
+  ): Promise<{ mapping: WtrMappingResult; target: { nom: string; calendarExternalIds: string[] } | null }> {
+    const exactCandidates = await this.repository.findCalendarCandidates(item.dateStart);
+    const exact = mapResultsCompetition(item, exactCandidates, list);
+    if (exact.verdict !== "UNMATCHED") {
+      return { mapping: exact, target: exactCandidates.find((c) => c.competitionId === exact.competitionId) ?? null };
+    }
+
+    const name = normalizeCompetitionName(item.name);
+    const divisionCandidates = (await this.repository.findDivisionCandidates(item.dateStart, item.dateEnd)).filter(
+      (c) => normalizeCompetitionName(c.nom) === name,
+    );
+    if (divisionCandidates.length === 0) return { mapping: exact, target: null };
+
+    const listing = await this.importer.fetchResultsListing(item.slug);
+    const discipline = resultsDisciplineFromCategories(listing.categories.map((c) => c.label));
+    const byDivisions = mapResultsCompetitionByDivisions(item, divisionCandidates, list, discipline);
+    if (byDivisions.verdict === "UNMATCHED") {
+      return { mapping: { ...exact, reasons: [...exact.reasons, ...byDivisions.reasons] }, target: null };
+    }
+    return {
+      mapping: byDivisions,
+      target: divisionCandidates.find((c) => c.competitionId === byDivisions.competitionId) ?? null,
+    };
+  }
+
   private async importCompetition(
     result: CompetitionImportReport,
     list: Awaited<ReturnType<WorldTaekwondoResultsImporterService["fetchCompetitionList"]>>,
@@ -158,9 +198,7 @@ export class WtResultsImportService {
     result.resultsDates = { start: isoDay(item.dateStart), end: isoDay(item.dateEnd) };
 
     // 1) Mapping conservateur calendrier WT ↔ Results (voir wtr-competition-matcher).
-    const candidates = await this.repository.findCalendarCandidates(item.dateStart);
-    const mapping = mapResultsCompetition(item, candidates, list);
-    const target = candidates.find((c) => c.competitionId === mapping.competitionId);
+    const { mapping, target } = await this.resolveMapping(item, list);
     result.mapping = {
       ...mapping,
       ekvaraName: target?.nom ?? null,

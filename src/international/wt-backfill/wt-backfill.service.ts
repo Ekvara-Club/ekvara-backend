@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InternationalRepository } from "../international.repository";
-import { CalendarCandidate, mapResultsCompetition, WtrCompetitionRef } from "../wt-results/wtr-competition-matcher";
+import { WtrCompetitionRef } from "../wt-results/wtr-competition-matcher";
 import { WorldTaekwondoResultsImporterService, WtrBlockedError } from "../wt-results/wt-results-importer.service";
 import { WtResultsImportService } from "../wt-results/wt-results-import.service";
 import { EventProgress, NewBackfillEvent, WtBackfillRepository } from "./wt-backfill.repository";
@@ -84,8 +84,7 @@ export class WtBackfillService {
     const events: NewBackfillEvent[] = [];
     const preview: DiscoveredEventPreview[] = [];
     for (const item of candidates) {
-      const calendarCandidates: CalendarCandidate[] = await this.internationalRepo.findCalendarCandidates(item.dateStart);
-      const mapping = mapResultsCompetition(item, calendarCandidates, allItems);
+      const { mapping } = await this.importService.resolveMapping(item, allItems);
       const verdict = mapping.verdict;
       events.push({
         slug: item.slug,

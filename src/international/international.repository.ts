@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
-import { CalendarCandidate } from "./wt-results/wtr-competition-matcher";
+import { CalendarCandidate, DivisionCandidate } from "./wt-results/wtr-competition-matcher";
 import { diffMatchFacts, hasLogicalKey, MatchFacts, reconcileMatch } from "./wt-results/wtr-match-reconciliation";
 
 export interface AthleteSourceInput {
@@ -598,6 +598,33 @@ export class InternationalRepository {
       nom: c.nom,
       dateDebut: c.date_debut,
       dateFin: c.date_fin,
+      calendarExternalIds: c.sources.map((s) => s.source_external_id),
+    }));
+  }
+
+  // #22 — Compétitions canoniques du calendrier WT dont la plage [date_debut,
+  // date_fin ?? date_debut] CONTIENT la plage Results, avec les divisions
+  // brutes de leur entrée calendrier. Une competition portant plusieurs
+  // entrées calendrier WT n'a pas de divisions univoques : divisions = null
+  // (le matcher la traite alors comme indécidable, jamais comme compatible).
+  async findDivisionCandidates(
+    dateStart: Date,
+    dateEnd: Date,
+  ): Promise<(DivisionCandidate & { calendarExternalIds: string[] })[]> {
+    const rows = await this.prisma.competition.findMany({
+      where: {
+        date_debut: { lte: dateStart },
+        OR: [{ date_fin: { gte: dateEnd } }, { date_fin: null, date_debut: { gte: dateEnd } }],
+        sources: { some: { source: "world_taekwondo" } },
+      },
+      include: { sources: { where: { source: "world_taekwondo" }, select: { source_external_id: true, raw_divisions: true } } },
+    });
+    return rows.map((c) => ({
+      competitionId: c.id,
+      nom: c.nom,
+      dateDebut: c.date_debut,
+      dateFin: c.date_fin,
+      divisions: c.sources.length === 1 ? c.sources[0].raw_divisions : null,
       calendarExternalIds: c.sources.map((s) => s.source_external_id),
     }));
   }

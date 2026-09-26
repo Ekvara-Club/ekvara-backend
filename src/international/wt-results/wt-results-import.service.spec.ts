@@ -137,6 +137,83 @@ describe("WtResultsImportService (intégration Postgres, importer HTTP simulé)"
     };
   }
 
+  // #22 — un événement Results d'un seul jour (jour Senior) dans une entrée
+  // calendrier multi-jours dont les divisions sont persistées.
+  async function divisionScenario(label: string, divisionLabel: string) {
+    dayOffset += 5;
+    const day = (n: number) => new Date(Date.UTC(2033, 5, dayOffset + n));
+    const iso = (n: number) => day(n).toISOString().slice(0, 10);
+    const token = `zzq${label}${runId}`;
+    const competition = await prisma.competition.create({
+      data: {
+        nom: `WT ${token} Cup - Europe`,
+        date_debut: day(0),
+        date_fin: day(3),
+        sources: {
+          create: {
+            source: "world_taekwondo",
+            source_external_id: `cal-${token}`,
+            raw_divisions: [
+              { dateText: "d0", discipline: "Kyorugi / Cadet", start: iso(0), end: iso(0) },
+              { dateText: "d1", discipline: "Kyorugi / Junior", start: iso(1), end: iso(1) },
+              { dateText: "d2-3", discipline: divisionLabel, start: iso(2), end: iso(3) },
+            ],
+          },
+        },
+      },
+    });
+    competitionIds.push(competition.id);
+    const item: WtrCompetitionListItem = { slug: `wt-${token}-cup-europe-2033`, name: `WT ${token} Cup Europe 2033`, dateStart: day(3), dateEnd: day(3) };
+    fake.list.push(item);
+    return { competition, item };
+  }
+
+  describe("resolveMapping par divisions calendrier (#22)", () => {
+    it("jour Senior contenu + division Kyorugi + catégories de poids ⇒ SAFE, identique en mapping seul", async () => {
+      const { competition, item } = await divisionScenario("divsafe", "Kyorugi / Senior");
+      fake.listings.set(item.slug, { categories: [{ label: "Men -54kg", eventId: randomUUID() }, { label: "Women +73kg", eventId: randomUUID() }], matchIds: [] });
+
+      const { mapping } = await service.resolveMapping(item, fake.list);
+      expect(mapping.verdict).toBe("SAFE");
+      expect(mapping.competitionId).toBe(competition.id);
+
+      const report = await run({ slugs: [item.slug], mappingOnly: true });
+      expect(report.competitions[0].mapping?.verdict).toBe("SAFE");
+      expect(report.competitions[0].mapping?.ekvaraName).toBe(competition.nom);
+      expect(await prisma.competition_source.count({ where: { source: "world_taekwondo_results", source_external_id: item.slug } })).toBe(0);
+    });
+
+    it("entrée calendrier Poomsae ce jour-là ⇒ UNMATCHED, rien écrit", async () => {
+      const { item } = await divisionScenario("divpoomsae", "Poomsae");
+      fake.listings.set(item.slug, { categories: [{ label: "Men -54kg", eventId: randomUUID() }], matchIds: [] });
+      const { mapping } = await service.resolveMapping(item, fake.list);
+      expect(mapping.verdict).toBe("UNMATCHED");
+      const report = await run({ slugs: [item.slug] });
+      expect(report.competitions[0].attach).toBeNull();
+      expect(await prisma.competition_source.count({ where: { source: "world_taekwondo_results", source_external_id: item.slug } })).toBe(0);
+    });
+
+    it("catégories Results non pondérales (discipline non prouvée) ⇒ UNMATCHED", async () => {
+      const { item } = await divisionScenario("divunknown", "Kyorugi / Senior");
+      fake.listings.set(item.slug, { categories: [{ label: "Individual Male Under 30", eventId: randomUUID() }], matchIds: [] });
+      expect((await service.resolveMapping(item, fake.list)).mapping.verdict).toBe("UNMATCHED");
+    });
+
+    it("règle exacte SAFE : aucune lecture des catégories Results", async () => {
+      const { item } = await scenario("divexact");
+      const { mapping } = await service.resolveMapping(item, fake.list);
+      expect(mapping.verdict).toBe("SAFE");
+      expect(fake.calls.filter((c) => c.startsWith("listing:"))).toEqual([]);
+    });
+
+    it("aucune candidate homonyme contenant l'événement : aucune lecture des catégories Results", async () => {
+      const lonely: WtrCompetitionListItem = { slug: `zzq-lonely-${runId}`, name: `Zzq Lonely ${runId} Open`, dateStart: new Date(Date.UTC(2033, 11, 30)), dateEnd: new Date(Date.UTC(2033, 11, 30)) };
+      const { mapping } = await service.resolveMapping(lonely, [lonely]);
+      expect(mapping.verdict).toBe("UNMATCHED");
+      expect(fake.calls).toEqual([]);
+    });
+  });
+
   it("SAFE : attache la source Results à la competition canonique et importe les matchs avec orientation, score, vainqueur et méthode fidèles à la page match", async () => {
     const { competition, slug } = await scenario("safe");
     const alice = fixtureAthlete("Alice EXEMPLE", "FRA");

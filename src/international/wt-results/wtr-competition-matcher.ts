@@ -159,6 +159,191 @@ export function mapResultsCompetition(
   };
 }
 
+// ---------------------------------------------------------------------------
+// #22 — Rapprochement par DIVISIONS du calendrier (Results uniquement).
+//
+// Utilisé SEULEMENT quand la règle exacte ci-dessus a répondu UNMATCHED : WT
+// Results publie souvent un seul jour (ex. le jour Senior) alors que le
+// calendrier publie l'événement entier (Cadet 4 juin, Junior 5, Senior 6-7).
+// Un rattachement n'est autorisé que si TOUT ce qui suit est vrai :
+//
+//   1. nom : même ensemble de mots distinctifs que la règle exacte ;
+//   2. discipline Results PROUVÉE Kyorugi (toutes ses catégories sont des
+//      catégories de poids — voir resultsDisciplineFromCategories) ;
+//   3. la plage Results est entièrement CONTENUE dans la plage canonique ;
+//   4. chaque jour Results est couvert par une division calendrier dont la
+//      source écrit explicitement "Kyorugi" (une entrée Poomsae seule, ou une
+//      division sans discipline déclarée comme "Senior" en 2025, ne prouve
+//      rien et n'est jamais interprétée) ;
+//   5. exactement UNE candidate remplit 1-4, aucune autre candidate homonyme
+//      contenant la plage ne reste indécidable (divisions absentes/illisibles
+//      ou non déclarées), et aucun AUTRE événement Results homonyme ne tombe
+//      dans la plage de la candidate retenue.
+//
+// Validé par simulation #22 (175 canoniques × 109 Results 2025-2026 +
+// contrôles négatifs) : 0 SAFE modifié, 0 nouvelle ambiguïté, 0 collision.
+// ---------------------------------------------------------------------------
+
+export type ResultsDiscipline = "KYORUGI" | "UNKNOWN";
+export type DivisionDiscipline = "KYORUGI" | "POOMSAE" | "UNSTATED";
+
+export interface DivisionCandidate extends CalendarCandidate {
+  // competition_source.raw_divisions de l'entrée calendrier WT, tel que stocké
+  // (non typé : validé ici, toute forme inattendue ⇒ candidate indécidable).
+  divisions: unknown;
+}
+
+// Catégorie de poids : "-54kg", "+87kg", "K44 -58kg"... Le Poomsae n'en a pas.
+const WEIGHT_CATEGORY = /[-+]\d+(\.\d+)?\s*kg\b/i;
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+export function resultsDisciplineFromCategories(categoryLabels: string[]): ResultsDiscipline {
+  if (categoryLabels.length === 0) return "UNKNOWN";
+  return categoryLabels.every((label) => WEIGHT_CATEGORY.test(label)) ? "KYORUGI" : "UNKNOWN";
+}
+
+// Seul le premier segment écrit par la source compte ("Kyorugi / Senior").
+export function divisionDiscipline(label: string | null): DivisionDiscipline {
+  const first = (label ?? "").split("/")[0].trim().toLowerCase();
+  if (first === "kyorugi") return "KYORUGI";
+  if (first === "poomsae") return "POOMSAE";
+  return "UNSTATED";
+}
+
+interface ParsedDivision {
+  kind: DivisionDiscipline;
+  start: string | null;
+  end: string | null;
+}
+
+type DivisionCompatibility = "COMPATIBLE" | "INCOMPATIBLE" | "UNKNOWN";
+
+export function mapResultsCompetitionByDivisions(
+  results: WtrCompetitionRef,
+  candidates: DivisionCandidate[],
+  otherResultsCompetitions: WtrCompetitionRef[],
+  resultsDiscipline: ResultsDiscipline,
+): WtrMappingResult {
+  const normalizedName = normalizeCompetitionName(results.name);
+  const tokens = distinctiveTokens(results.name);
+  const unmatched = (reasons: string[]): WtrMappingResult => ({ normalizedName, verdict: "UNMATCHED", competitionId: null, reasons });
+
+  if (tokens.length < MIN_DISTINCTIVE_TOKENS) {
+    return unmatched([`nom Results trop générique après normalisation ("${normalizedName}")`]);
+  }
+  if (resultsDiscipline !== "KYORUGI") {
+    return unmatched(["discipline Kyorugi du Results non prouvée par ses catégories"]);
+  }
+
+  const start = isoDay(results.dateStart);
+  const end = isoDay(results.dateEnd);
+  const assessed: { candidate: DivisionCandidate; status: DivisionCompatibility; why: string }[] = [];
+  for (const candidate of candidates) {
+    if (!sameTokenSet(tokens, distinctiveTokens(candidate.nom))) continue;
+    if (!rangeContains(candidate, start, end)) continue;
+    assessed.push({ candidate, ...divisionCompatibility(candidate.divisions, start, end) });
+  }
+  const describe = (a: (typeof assessed)[number]) => `${a.candidate.competitionId} ("${a.candidate.nom}") ${a.status}: ${a.why}`;
+
+  const compatible = assessed.filter((a) => a.status === "COMPATIBLE");
+  const undecidable = assessed.filter((a) => a.status === "UNKNOWN");
+  if (compatible.length === 0) {
+    return unmatched([
+      "aucune candidate homonyme dont la plage contient le Results et dont les divisions prouvent le Kyorugi",
+      ...assessed.map(describe),
+    ]);
+  }
+  if (compatible.length > 1 || undecidable.length > 0) {
+    return {
+      normalizedName,
+      verdict: "AMBIGUOUS",
+      competitionId: null,
+      reasons: ["plusieurs candidates homonymes ne peuvent pas être départagées par les divisions", ...assessed.map(describe)],
+    };
+  }
+
+  const target = compatible[0].candidate;
+  const rivals = otherResultsCompetitions.filter(
+    (other) =>
+      other.slug !== results.slug &&
+      sameTokenSet(tokens, distinctiveTokens(other.name)) &&
+      rangeContains(target, isoDay(other.dateStart), isoDay(other.dateEnd)),
+  );
+  if (rivals.length > 0) {
+    return {
+      normalizedName,
+      verdict: "AMBIGUOUS",
+      competitionId: null,
+      reasons: [`une autre compétition Results homonyme tombe dans la plage de la candidate: ${rivals.map((r) => r.slug).join(", ")}`],
+    };
+  }
+
+  return {
+    normalizedName,
+    verdict: "SAFE",
+    competitionId: target.competitionId,
+    reasons: [
+      `plage Results ${start}..${end} contenue dans la plage calendrier`,
+      compatible[0].why,
+      `ensemble de mots distinctifs identique: ${tokens.join(", ")}`,
+      "une seule candidate, aucun concurrent Results",
+    ],
+  };
+}
+
+function divisionCompatibility(raw: unknown, start: string, end: string): { status: DivisionCompatibility; why: string } {
+  const divisions = parseDivisions(raw);
+  if (!divisions) return { status: "UNKNOWN", why: "divisions calendrier absentes ou illisibles" };
+
+  const missing: string[] = [];
+  for (let day = start; day <= end; day = nextDay(day)) {
+    if (!divisions.some((d) => d.kind === "KYORUGI" && covers(d, day))) missing.push(day);
+  }
+  if (missing.length === 0) return { status: "COMPATIBLE", why: "chaque jour Results couvert par une division Kyorugi" };
+
+  // Un jour sans Kyorugi explicite reste indécidable s'il pourrait relever d'une
+  // division sans discipline déclarée (datée sur ce jour, ou non datée).
+  const unstatedMayCover = missing.some((day) => divisions.some((d) => d.kind === "UNSTATED" && covers(d, day)));
+  const undatedNonPoomsae = divisions.some((d) => d.start === null && d.kind !== "POOMSAE");
+  if (unstatedMayCover || undatedNonPoomsae) {
+    return { status: "UNKNOWN", why: `jour(s) ${missing.join(", ")} couverts seulement par une division sans discipline déclarée` };
+  }
+  return { status: "INCOMPATIBLE", why: `jour(s) ${missing.join(", ")} sans division Kyorugi (Poomsae seul ou rien de programmé)` };
+}
+
+// null si la forme n'est pas exactement celle écrite par l'importeur calendrier.
+function parseDivisions(raw: unknown): ParsedDivision[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const parsed: ParsedDivision[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return null;
+    const { dateText, discipline, start, end } = item as Record<string, unknown>;
+    if (typeof dateText !== "string") return null;
+    if (discipline !== null && typeof discipline !== "string") return null;
+    const undated = start === null && end === null;
+    const dated = typeof start === "string" && typeof end === "string" && ISO_DAY.test(start) && ISO_DAY.test(end) && start <= end;
+    if (!undated && !dated) return null;
+    parsed.push({ kind: divisionDiscipline(discipline), start: dated ? start : null, end: dated ? end : null });
+  }
+  return parsed;
+}
+
+function covers(division: ParsedDivision, day: string): boolean {
+  return division.start !== null && division.end !== null && division.start <= day && day <= division.end;
+}
+
+function rangeContains(candidate: CalendarCandidate, start: string, end: string): boolean {
+  return isoDay(candidate.dateDebut) <= start && end <= isoDay(candidate.dateFin ?? candidate.dateDebut);
+}
+
+function nextDay(day: string): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
+
+function isoDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
 function distinctiveTokens(name: string): string[] {
   const normalized = name
     .toLowerCase()
@@ -180,5 +365,5 @@ function sameTokenSet(a: string[], b: string[]): boolean {
 }
 
 function sameDay(a: Date, b: Date): boolean {
-  return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+  return isoDay(a) === isoDay(b);
 }

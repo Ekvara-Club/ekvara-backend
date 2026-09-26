@@ -171,6 +171,40 @@ describe("WtBackfillService (intégration Postgres, importer HTTP simulé, pipel
 
   // --- EVENT PROCESSING NOMINAL ---------------------------------------------
 
+  it("discover (#22) : jour Senior contenu dans une entrée calendrier à divisions Kyorugi -> SAFE, même verdict que l'import", async () => {
+    dayOffset += 5;
+    const day = (n: number) => new Date(Date.UTC(2035, 5, dayOffset + n));
+    const iso = (n: number) => day(n).toISOString().slice(0, 10);
+    const token = `zzbdiv${runLabel}`;
+    const competition = await prisma.competition.create({
+      data: {
+        nom: `WT ${token} Cup - Europe`,
+        date_debut: day(0),
+        date_fin: day(2),
+        sources: {
+          create: {
+            source: "world_taekwondo",
+            source_external_id: `cal-${token}`,
+            raw_divisions: [
+              { dateText: "d0", discipline: "Kyorugi / Cadet / Junior", start: iso(0), end: iso(0) },
+              { dateText: "d1-2", discipline: "Kyorugi / Senior", start: iso(1), end: iso(2) },
+            ],
+          },
+        },
+      },
+    });
+    competitionIds.push(competition.id);
+    const slug = `wt-${token}-cup-europe-2035`;
+    fake.list.push({ slug, name: `WT ${token} Cup Europe 2035`, dateStart: day(2), dateEnd: day(2) });
+    registerCategory(slug, "Men -54kg", []);
+
+    const result = await discover({ kind: "slugs", years: [2035], slugs: [slug] });
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].mappingVerdict).toBe("SAFE");
+    expect(result.events[0].competitionId).toBe(competition.id);
+    expect(await prisma.competition_source.count({ where: { source: "world_taekwondo_results", source_external_id: slug } })).toBe(0);
+  });
+
   it("start : event à 2 catégories, toutes propres -> COMPLETED, stats agrégées sur les 2 catégories, run COMPLETED", async () => {
     const { competition, slug } = await safeScenario("nominal");
     const alice = fixtureAthlete("Alice EXEMPLE", "FRA");
