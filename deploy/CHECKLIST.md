@@ -37,22 +37,22 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 ## C. Parcours réels (à faire ensemble, sur la prod une fois en ligne)
 
 Coach :
-- ⬜ Connexion coach / déconnexion
-- ⬜ Créer un groupe, créer une invitation athlète
+- ✅ (local) Connexion coach / déconnexion
+- ✅ (local) Créer une invitation athlète (avec groupe) — création de groupe non retestée
 - ⬜ Créer une séance unique pour le groupe
-- ⬜ Créer une séance récurrente (ex. tous les mercredis, 1 mois) → bon nombre de séances, bonnes heures
+- ✅ (local) Créer une séance récurrente (ex. tous les mercredis, 1 mois) → bon nombre de séances, bonnes heures
 - ⬜ Annuler la suite d'une série
 - ⬜ Préparer une compétition pour un athlète
 - ⬜ Fiche athlète : étoile de compétences dans Progression (contour pointillé = évaluation précédente) ; « Barème » : modifier une capacité, l'étoile se recalcule (aussi côté athlète)
-- ⬜ Voir l'état d'un athlète (badge dans la liste, fiche, « À surveiller ») et ouvrir sa fiche depuis la notification
+- ✅ (local) Voir l'état d'un athlète (badge dans la liste, fiche, « À surveiller ») et ouvrir sa fiche depuis la notification
 - ⬜ Demande de profil World Taekwondo : notification, « À surveiller », Confirmer puis Refuser (sur un autre athlète)
 
 Athlète :
-- ⬜ Inscription avec le code d'invitation → arrive connecté sur l'accueil
-- ⬜ Accueil : les 5 cartes s'affichent ; compte neuf → « + Ajouter une pesée / un entraînement / une compétition » depuis les cartes vides
-- ⬜ Activité : voit les séances du coach (dont la série), ajoute un entraînement
-- ⬜ Notifications : « Nouvel entraînement récurrent », un seul message
-- ⬜ Poids : ajouter une pesée
+- ✅ (local) Inscription avec le code d'invitation → arrive connecté sur l'accueil
+- ✅ (local) Accueil : les 5 cartes s'affichent ; compte neuf → « + Ajouter une pesée / un entraînement / une compétition » depuis les cartes vides
+- ✅ (local) Activité : voit les séances du coach (dont la série), ajoute un entraînement
+- ✅ (local) Notifications : « Nouvel entraînement récurrent », un seul message
+- ✅ (local) Poids : ajouter une pesée
 - ⬜ Objectifs, Progression, Exercices : pages chargées ; étoile de compétences (Progression + Passeport) après 3 capacités évaluées
 - ⬜ Compétitions : catalogue, filtres, fiche ; s'inscrire à une compétition
 - ⬜ Passeport : renseigner un résultat passé
@@ -62,7 +62,7 @@ Athlète :
 
 Sécurité :
 - ⬜ `POST https://api.DOMAINE/competitions/import/fftda` → 404
-- ⬜ Un athlète ne peut pas ouvrir l'app coach (refus propre)
+- ✅ (local) Un athlète ne peut pas ouvrir l'app coach (refus propre)
 - ⬜ Cookies : `Secure`, `HttpOnly` (outils développeur du navigateur)
 - ⬜ RGPD : inscription refusée sans les 3 cases ; « Télécharger mes données » ; « Supprimer mon compte » sur un compte de test
 
