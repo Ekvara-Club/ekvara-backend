@@ -11,6 +11,7 @@ import {
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { CompetitionsService } from "./competitions.service";
 import { CompetitionEntriesService } from "./competition-entries.service";
+import { HttpImportsGuard } from "./http-imports.guard";
 
 const MIN_YEAR = 2000;
 const MAX_YEAR = 2100;
@@ -103,17 +104,20 @@ export class CompetitionsController {
   }
 
   @Post("import/fftda")
+  @UseGuards(HttpImportsGuard)
   importFftda() {
     return this.competitionsService.importFftda();
   }
 
   @Post("import/world-taekwondo")
+  @UseGuards(HttpImportsGuard)
   importWorldTaekwondo(@Query("year") yearParam?: string) {
     const year = this.parseYear(yearParam);
     return this.competitionsService.importWorldTaekwondo(year);
   }
 
   @Post("import/martial-events")
+  @UseGuards(HttpImportsGuard)
   importMartialEvents() {
     return this.competitionsService.importMartialEvents();
   }

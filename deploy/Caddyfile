@@ -1,0 +1,38 @@
+# Caddy sur le Raspberry Pi — derrière Cloudflare Tunnel.
+# Cloudflare termine le HTTPS : Caddy écoute en HTTP sur localhost:8080
+# uniquement (jamais exposé sur la box). Domaine via la variable
+# d'environnement EKVARA_DOMAIN (ex. ekvara.fr), voir deploy/README.md.
+{
+	auto_https off
+	admin off
+}
+
+(static_spa) {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+	}
+	# Fichiers versionnés par Vite (hash dans le nom) : cache long.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	# Routage côté client (pushState) : toute route inconnue -> index.html.
+	try_files {path} /index.html
+	file_server
+}
+
+http://app.{$EKVARA_DOMAIN}:8080 {
+	root * /srv/ekvara/athlete
+	import static_spa
+}
+
+http://coach.{$EKVARA_DOMAIN}:8080 {
+	root * /srv/ekvara/coach
+	import static_spa
+}
+
+http://api.{$EKVARA_DOMAIN}:8080 {
+	encode zstd gzip
+	reverse_proxy localhost:3000
+}

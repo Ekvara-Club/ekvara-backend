@@ -1,0 +1,13 @@
+# /etc/cloudflared/config.yml sur le Pi (voir deploy/README.md, étape 5).
+# Remplacer <TUNNEL_ID> et ekvara.fr par tes valeurs.
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: app.ekvara.fr
+    service: http://localhost:8080
+  - hostname: coach.ekvara.fr
+    service: http://localhost:8080
+  - hostname: api.ekvara.fr
+    service: http://localhost:8080
+  - service: http_status:404

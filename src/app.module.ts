@@ -12,6 +12,7 @@ import { ExercisesModule } from "./exercises/exercises.module";
 import { CoachModule } from "./coach/coach.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { InternationalModule } from "./international/international.module";
+import { HealthModule } from "./health/health.module";
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { InternationalModule } from "./international/international.module";
     NotificationsModule,
     CoachModule,
     InternationalModule,
+    HealthModule,
   ],
 })
 export class AppModule {}
