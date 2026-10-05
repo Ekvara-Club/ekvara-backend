@@ -652,4 +652,49 @@ describe("CompetitionsRepository (intégration Postgres)", () => {
       expect(detail?.all_sources.map((s) => s.source).sort()).toEqual(["fftda", "martial_events"]);
     });
   });
+
+  describe("synchro des sources : changements appliqués à une compétition connue", () => {
+    it("source unique : date et ville mises à jour et listées ; le nom n'est jamais réécrit ; ré-import identique = aucun changement", async () => {
+      const first = await repository.upsertFromSource(
+        fixture({ source: "fftda", sourceExternalId: extId("sync-unique"), nom: "Open Synchro", dateDebut: new Date("2027-03-13T00:00:00.000Z"), ville: "Eaubonne" }),
+      );
+      createdCompetitionIds.push(first.competition.id);
+
+      const moved = await repository.upsertFromSource(
+        fixture({ source: "fftda", sourceExternalId: extId("sync-unique"), nom: "Open Synchro RENOMMÉ", dateDebut: new Date("2027-03-20T00:00:00.000Z"), ville: "Cergy" }),
+      );
+
+      expect(moved.changes).toEqual([
+        { field: "date_debut", before: "2027-03-13", after: "2027-03-20" },
+        { field: "ville", before: "Eaubonne", after: "Cergy" },
+      ]);
+      const row = await prisma.competition.findUniqueOrThrow({ where: { id: first.competition.id } });
+      expect(row.date_debut.toISOString().slice(0, 10)).toBe("2027-03-20");
+      expect(row.ville).toBe("Cergy");
+      expect(row.nom).toBe("Open Synchro");
+
+      const again = await repository.upsertFromSource(
+        fixture({ source: "fftda", sourceExternalId: extId("sync-unique"), nom: "Open Synchro", dateDebut: new Date("2027-03-20T00:00:00.000Z"), ville: "Cergy" }),
+      );
+      expect(again.changes).toEqual([]);
+    });
+
+    it("plusieurs sources rattachées : aucune réécriture (deux sources pourraient se contredire)", async () => {
+      const first = await repository.upsertFromSource(
+        fixture({ source: "fftda", sourceExternalId: extId("sync-multi"), nom: "Open Multi", dateDebut: new Date("2027-04-10T00:00:00.000Z") }),
+      );
+      createdCompetitionIds.push(first.competition.id);
+      await prisma.competition_source.create({
+        data: { competition_id: first.competition.id, source: "world_taekwondo", source_external_id: extId("sync-multi-wt"), match_confidence: "safe" },
+      });
+
+      const result = await repository.upsertFromSource(
+        fixture({ source: "fftda", sourceExternalId: extId("sync-multi"), nom: "Open Multi", dateDebut: new Date("2027-04-17T00:00:00.000Z") }),
+      );
+
+      expect(result.changes).toEqual([]);
+      const row = await prisma.competition.findUniqueOrThrow({ where: { id: first.competition.id } });
+      expect(row.date_debut.toISOString().slice(0, 10)).toBe("2027-04-10");
+    });
+  });
 });

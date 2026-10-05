@@ -12,6 +12,7 @@
     "create:coach": "node dist/src/coach/create-coach.cli.js",
     "reset:password": "node dist/src/auth/reset-password.cli.js",
     "import:competitions": "node dist/src/competitions/competitions-import.cli.js",
+    "sync:sources": "node dist/src/sync/sync-sources.cli.js",
     "test": "jest",
     "seed:exercises": "nest build && node dist/src/exercises/seed/seed-exercises.js",
     "seed:metrics": "node dist/src/metrics/seed/seed-metric-types.cli.js",

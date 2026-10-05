@@ -24,6 +24,8 @@ export const NOTIFICATION_TYPES = [
   "WT_PROFILE_LINK_REQUESTED",
   "WT_PROFILE_LINK_CONFIRMED",
   "WT_PROFILE_LINK_REJECTED",
+  // Synchro des sources : date/lieu d'une compétition modifié à la source.
+  "COMPETITION_UPDATED",
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
@@ -41,6 +43,7 @@ export const ATHLETE_CONDITION_UPDATED: NotificationType = "ATHLETE_CONDITION_UP
 export const WT_PROFILE_LINK_REQUESTED: NotificationType = "WT_PROFILE_LINK_REQUESTED";
 export const WT_PROFILE_LINK_CONFIRMED: NotificationType = "WT_PROFILE_LINK_CONFIRMED";
 export const WT_PROFILE_LINK_REJECTED: NotificationType = "WT_PROFILE_LINK_REJECTED";
+export const COMPETITION_UPDATED: NotificationType = "COMPETITION_UPDATED";
 
 // Un app_user peut posséder à la fois athlete et coach_profile (compte
 // hybride, voir JwtPayload) : `context` distingue l'interface pour laquelle
@@ -73,4 +76,5 @@ export const EXERCISE_RESOURCE: NotificationResourceType = "EXERCISE";
 export const GOAL_RESOURCE: NotificationResourceType = "GOAL";
 export const WEIGHT_TARGET_RESOURCE: NotificationResourceType = "WEIGHT_TARGET";
 export const ATHLETE_RESOURCE: NotificationResourceType = "ATHLETE";
+export const COMPETITION_RESOURCE: NotificationResourceType = "COMPETITION";
 export const WT_PROFILE_RESOURCE: NotificationResourceType = "WT_PROFILE";

@@ -87,6 +87,7 @@ describe("CompetitionsService", () => {
       imported: 2,
       updated: 0,
       failed: 0,
+      changed: [],
     });
     expect(repository.upsertFromSource).toHaveBeenCalledTimes(2);
   });
@@ -104,8 +105,8 @@ describe("CompetitionsService", () => {
       .mockResolvedValueOnce({ competition: {}, created: false });
     const secondRun = await service.importFftda();
 
-    expect(firstRun).toEqual({ source: "fftda", fetched: 2, imported: 2, updated: 0, failed: 0 });
-    expect(secondRun).toEqual({ source: "fftda", fetched: 2, imported: 0, updated: 2, failed: 0 });
+    expect(firstRun).toEqual({ source: "fftda", fetched: 2, imported: 2, updated: 0, failed: 0, changed: [] });
+    expect(secondRun).toEqual({ source: "fftda", fetched: 2, imported: 0, updated: 2, failed: 0, changed: [] });
 
     const [firstCallArg] = repository.upsertFromSource.mock.calls[0];
     const [thirdCallArg] = repository.upsertFromSource.mock.calls[2];
@@ -120,7 +121,7 @@ describe("CompetitionsService", () => {
 
     const summary = await service.importFftda();
 
-    expect(summary).toEqual({ source: "fftda", fetched: 3, imported: 2, updated: 0, failed: 1 });
+    expect(summary).toEqual({ source: "fftda", fetched: 3, imported: 2, updated: 0, failed: 1, changed: [] });
   });
 
   it("comptabilise en échec un upsert qui lève une erreur, sans interrompre les autres compétitions", async () => {
@@ -131,7 +132,7 @@ describe("CompetitionsService", () => {
 
     const summary = await service.importFftda();
 
-    expect(summary).toEqual({ source: "fftda", fetched: 2, imported: 1, updated: 0, failed: 1 });
+    expect(summary).toEqual({ source: "fftda", fetched: 2, imported: 1, updated: 0, failed: 1, changed: [] });
   });
 
   it("importWorldTaekwondo retourne un résumé cohérent incluant l'année demandée", async () => {
@@ -147,6 +148,7 @@ describe("CompetitionsService", () => {
       imported: 1,
       updated: 0,
       failed: 0,
+      changed: [],
     });
     expect(wtImporter.fetchCompetitions).toHaveBeenCalledWith(2026);
   });
@@ -167,6 +169,7 @@ describe("CompetitionsService", () => {
       imported: 1,
       updated: 0,
       failed: 0,
+      changed: [],
     });
     expect(secondRun).toEqual({
       source: "world_taekwondo",
@@ -175,6 +178,7 @@ describe("CompetitionsService", () => {
       imported: 0,
       updated: 1,
       failed: 0,
+      changed: [],
     });
   });
 

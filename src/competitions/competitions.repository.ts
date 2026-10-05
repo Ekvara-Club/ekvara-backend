@@ -19,10 +19,20 @@ import { matchCompetitions } from "./matching/competition-matcher";
 //   automatiquement, voir §6/§5 du ticket) ⇒ nouvelle competition canonique.
 export type UpsertOutcome = "updated" | "attachedSafe" | "created";
 
+// Changement appliqué à une compétition déjà connue lors d'un ré-import
+// (synchro des sources) : valeurs lisibles, pour le rapport et les
+// notifications. Dates en AAAA-MM-JJ.
+export interface CompetitionFieldChange {
+  field: "date_debut" | "date_fin" | "lieu" | "ville" | "pays";
+  before: string | null;
+  after: string | null;
+}
+
 export interface UpsertResult {
   competition: CompetitionModel;
   created: boolean;
   outcome: UpsertOutcome;
+  changes?: CompetitionFieldChange[];
 }
 
 @Injectable()
@@ -161,8 +171,9 @@ export class CompetitionsRepository {
         where: { id: existingSource.id },
         data: rawSourcePayload(data),
       });
+      const changes = await this.applySourceChanges(existingSource.competition_id, data);
       const competition = await this.fillNullFieldsOnly(existingSource.competition_id, data);
-      return { competition, created: false, outcome: "updated" };
+      return { competition, created: false, outcome: "updated", changes };
     }
 
     // Étape B — source inconnue : chercher des candidates par date_debut
@@ -261,6 +272,44 @@ export class CompetitionsRepository {
   // JAMAIS écraser un champ canonique déjà renseigné — elle ne peut que
   // combler un champ actuellement null. Simple, déterministe, sans table de
   // priorité par champ par source.
+  // Synchro des sources : une date ou un lieu modifié À LA SOURCE est
+  // reporté sur la compétition EKVARA — uniquement si cette source est la
+  // SEULE rattachée (deux sources pourraient se contredire en boucle ; la
+  // compétition reste alors inchangée). Jamais le nom (une coquille de
+  // source ne doit pas renommer une compétition). Une valeur absente de
+  // l'import n'efface jamais une valeur existante.
+  private async applySourceChanges(competitionId: string, data: ImportedCompetition): Promise<CompetitionFieldChange[]> {
+    const sourceCount = await this.prisma.competition_source.count({ where: { competition_id: competitionId } });
+    if (sourceCount !== 1) return [];
+
+    const current = await this.prisma.competition.findUniqueOrThrow({ where: { id: competitionId } });
+    const day = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+    const changes: CompetitionFieldChange[] = [];
+    const patch: Record<string, unknown> = {};
+
+    if (day(current.date_debut) !== day(data.dateDebut)) {
+      changes.push({ field: "date_debut", before: day(current.date_debut), after: day(data.dateDebut) });
+      patch.date_debut = data.dateDebut;
+    }
+    if (data.dateFin && day(current.date_fin) !== day(data.dateFin)) {
+      changes.push({ field: "date_fin", before: day(current.date_fin), after: day(data.dateFin) });
+      patch.date_fin = data.dateFin;
+    }
+    for (const field of ["lieu", "ville", "pays"] as const) {
+      const incoming = data[field]?.trim();
+      if (incoming && incoming !== (current[field] ?? null)) {
+        changes.push({ field, before: current[field] ?? null, after: incoming });
+        patch[field] = incoming;
+      }
+    }
+
+    if (changes.length > 0) {
+      await this.prisma.competition.update({ where: { id: competitionId }, data: { ...patch, updated_at: new Date() } });
+      this.logger.log(`Synchro ${data.source}/${data.sourceExternalId} : ${changes.map((c) => `${c.field} ${c.before} -> ${c.after}`).join(", ")}`);
+    }
+    return changes;
+  }
+
   private async fillNullFieldsOnly(competitionId: string, data: ImportedCompetition): Promise<CompetitionModel> {
     const current = await this.prisma.competition.findUniqueOrThrow({ where: { id: competitionId } });
 

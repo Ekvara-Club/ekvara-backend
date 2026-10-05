@@ -167,6 +167,20 @@ une sauvegarde sur la même carte SD ne protège pas d'une panne de la carte.
 
 Restaurer : `pg_restore --clean --no-owner --dbname="$DATABASE_URL" fichier.dump`
 
+## 8 bis. Synchro des sources (tous les 3 jours)
+
+Compétitions (FFTDA, calendrier WT, Martial Events) et résultats WT récents
+des athlètes. Une date ou un lieu modifié à la source est reporté sur la
+fiche et notifié aux athlètes inscrits et aux coachs concernés.
+
+```bash
+crontab -e
+# 0 4 */3 * * /home/pi/ekvara/backend/deploy/sync-sources.sh
+tail -n 50 ~/ekvara/sync/sync.log     # résumé de la dernière synchro
+```
+
+Lancer à la main : `cd ~/ekvara/backend && ./deploy/sync-sources.sh`.
+
 ## 9. Mettre à jour
 
 - API (sur le Pi) : `cd ~/ekvara/backend && ./deploy/update-backend.sh`

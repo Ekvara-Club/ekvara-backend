@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { competition as CompetitionModel } from "../../generated/prisma/client";
-import { CompetitionsRepository } from "./competitions.repository";
+import { CompetitionFieldChange, CompetitionsRepository } from "./competitions.repository";
 import { CompetitionEntriesRepository } from "./competition-entries.repository";
 import { FftdaImporterService } from "./importers/fftda-importer.service";
 import { WtImporterService } from "./importers/world-taekwondo/wt-importer.service";
@@ -41,7 +41,7 @@ export class CompetitionsService {
 
   async importFftda() {
     const { competitions, detected, failed } = await this.fftdaImporterService.fetchCompetitions();
-    const { imported, updated, upsertFailed } = await this.upsertAll("FFTDA", competitions);
+    const { imported, updated, upsertFailed, changed } = await this.upsertAll("FFTDA", competitions);
 
     const summary = {
       source: "fftda",
@@ -49,6 +49,7 @@ export class CompetitionsService {
       imported,
       updated,
       failed: failed + upsertFailed,
+      changed,
     };
 
     this.logger.log(
@@ -60,7 +61,7 @@ export class CompetitionsService {
 
   async importWorldTaekwondo(year: number) {
     const { competitions, detected, failed } = await this.wtImporterService.fetchCompetitions(year);
-    const { imported, updated, upsertFailed } = await this.upsertAll("WT", competitions);
+    const { imported, updated, upsertFailed, changed } = await this.upsertAll("WT", competitions);
 
     const summary = {
       source: "world_taekwondo",
@@ -69,6 +70,7 @@ export class CompetitionsService {
       imported,
       updated,
       failed: failed + upsertFailed,
+      changed,
     };
 
     this.logger.log(
@@ -199,14 +201,20 @@ export class CompetitionsService {
     let imported = 0;
     let updated = 0;
     let upsertFailed = 0;
+    // Changements réellement appliqués (date/lieu modifiés à la source) :
+    // alimentent le rapport de synchro et les notifications.
+    const changed: { competitionId: string; nom: string; changes: CompetitionFieldChange[] }[] = [];
 
     for (const competition of competitions) {
       try {
-        const { created } = await this.competitionsRepository.upsertFromSource(competition);
+        const { created, changes, competition: saved } = await this.competitionsRepository.upsertFromSource(competition);
         if (created) {
           imported++;
         } else {
           updated++;
+        }
+        if (changes && changes.length > 0) {
+          changed.push({ competitionId: saved.id, nom: saved.nom, changes });
         }
       } catch (error) {
         upsertFailed++;
@@ -216,7 +224,7 @@ export class CompetitionsService {
       }
     }
 
-    return { imported, updated, upsertFailed };
+    return { imported, updated, upsertFailed, changed };
   }
 }
 
