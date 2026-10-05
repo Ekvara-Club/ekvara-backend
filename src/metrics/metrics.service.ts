@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { metric_measurement, metric_type } from "../../generated/prisma/client";
 import { ImprovementDirection, isImprovementDirection } from "./improvement-direction";
 import { CreateMeasurementDto } from "./dto/create-measurement.dto";
 import { MetricsRepository } from "./metrics.repository";
+import { computeSkillScore } from "./skill-score";
 
 export type ComparisonStatus = "improved" | "stable" | "regressed" | "unknown";
 
@@ -35,6 +36,10 @@ export interface MetricOverviewEntry {
   percentage: number | null;
   status: ComparisonStatus;
   measuredAt: Date | null;
+  // Étoile de compétences : note /100 selon le barème du metric_type
+  // (null si non évaluée ou capacité sans barème) — voir computeSkillScore.
+  score: number | null;
+  previousScore: number | null;
 }
 
 export interface MetricsOverviewResponse {
@@ -86,6 +91,12 @@ export function computePercentage(
       ? ((current - previous) / previous) * 100
       : ((previous - current) / previous) * 100;
   return round2(raw);
+}
+
+export interface ClubScaleInput {
+  metricTypeId: string;
+  scoreZero: number | null;
+  scoreHundred: number | null;
 }
 
 @Injectable()
@@ -148,8 +159,93 @@ export class MetricsService {
     await this.assertAthleteExists(athleteId);
 
     const comparisons = await this.compareAllMetricTypes(athleteId);
+    // Barème de l'étoile : celui du club de l'athlète s'il est défini pour la
+    // capacité, sinon le défaut du metric_type — même note que l'on regarde
+    // depuis le Passeport ou depuis la fiche de n'importe lequel de ses coachs.
+    const clubId = await this.metricsRepository.findAthleteClubId(athleteId);
+    const clubScales = clubId ? await this.metricsRepository.findClubScales(clubId) : [];
+    const scaleByMetric = new Map(
+      clubScales.map((s) => [s.metric_type_id, { zero: s.score_zero.toNumber(), hundred: s.score_hundred.toNumber() }]),
+    );
 
-    return { metrics: comparisons.map(toOverviewEntry) };
+    return { metrics: comparisons.map((c) => toOverviewEntry(c, scaleByMetric.get(c.metricType.id))) };
+  }
+
+  // Barème du club du coach (fiche athlète > Progression > « Barème ») :
+  // chaque capacité avec son défaut, le barème du club s'il existe et le
+  // barème effectivement appliqué.
+  async getClubScales(coachId: string) {
+    const clubId = await this.requireCoachClub(coachId);
+    const [metricTypes, clubScales] = await Promise.all([
+      this.metricsRepository.findAllMetricTypes(),
+      this.metricsRepository.findClubScales(clubId),
+    ]);
+    const byMetric = new Map(clubScales.map((s) => [s.metric_type_id, s]));
+    return {
+      scales: metricTypes.map((t) => {
+        const club = byMetric.get(t.id);
+        const defaultScale =
+          t.score_zero !== null && t.score_hundred !== null
+            ? { scoreZero: t.score_zero.toNumber(), scoreHundred: t.score_hundred.toNumber() }
+            : null;
+        const clubScale = club ? { scoreZero: club.score_zero.toNumber(), scoreHundred: club.score_hundred.toNumber() } : null;
+        return {
+          metricTypeId: t.id,
+          code: t.code,
+          name: t.nom,
+          unit: t.unite,
+          direction: t.improvement_direction,
+          default: defaultScale,
+          club: clubScale,
+          effective: clubScale ?? defaultScale,
+        };
+      }),
+    };
+  }
+
+  // Chaque ligne : barème complet (0/100 et 100/100) ou les deux à null pour
+  // revenir au défaut. Refusé (rien écrit) si une ligne est incomplète, vise
+  // une capacité inconnue, est dégénérée (0/100 = 100/100) ou va dans le
+  // mauvais sens par rapport à la capacité ("lower" : 0/100 > 100/100).
+  async saveClubScales(coachId: string, userId: string, items: ClubScaleInput[]) {
+    const clubId = await this.requireCoachClub(coachId);
+    const metricTypes = new Map((await this.metricsRepository.findAllMetricTypes()).map((t) => [t.id, t]));
+
+    const upserts: { metricTypeId: string; scoreZero: number; scoreHundred: number }[] = [];
+    const resets: string[] = [];
+    for (const item of items) {
+      const type = metricTypes.get(item.metricTypeId);
+      if (!type) throw new NotFoundException(`Capacité ${item.metricTypeId} introuvable`);
+      const { scoreZero, scoreHundred } = item;
+      if (scoreZero === null && scoreHundred === null) {
+        resets.push(item.metricTypeId);
+        continue;
+      }
+      if (scoreZero === null || scoreHundred === null) {
+        throw new BadRequestException(`${type.nom} : renseigne les deux valeurs (0/100 et 100/100), ou aucune pour le barème par défaut`);
+      }
+      if (scoreZero === scoreHundred) {
+        throw new BadRequestException(`${type.nom} : les valeurs 0/100 et 100/100 doivent être différentes`);
+      }
+      if (type.improvement_direction === "higher" && scoreZero > scoreHundred) {
+        throw new BadRequestException(`${type.nom} : plus haut = meilleur, la valeur 100/100 doit être supérieure à la valeur 0/100`);
+      }
+      if (type.improvement_direction === "lower" && scoreZero < scoreHundred) {
+        throw new BadRequestException(`${type.nom} : plus bas = meilleur, la valeur 100/100 doit être inférieure à la valeur 0/100`);
+      }
+      upserts.push({ metricTypeId: item.metricTypeId, scoreZero, scoreHundred });
+    }
+
+    await this.metricsRepository.saveClubScales(clubId, userId, upserts, resets);
+    return this.getClubScales(coachId);
+  }
+
+  private async requireCoachClub(coachId: string): Promise<string> {
+    const clubId = await this.metricsRepository.findCoachClubId(coachId);
+    if (!clubId) {
+      throw new ConflictException("Ton compte coach n'est rattaché à aucun club : le barème se règle par club.");
+    }
+    return clubId;
   }
 
   private async compareAllMetricTypes(athleteId: string): Promise<MetricComparison[]> {
@@ -262,7 +358,9 @@ function toHighlight(comparison: MetricComparison): Highlight {
   };
 }
 
-function toOverviewEntry(comparison: MetricComparison): MetricOverviewEntry {
+function toOverviewEntry(comparison: MetricComparison, clubScale?: { zero: number; hundred: number }): MetricOverviewEntry {
+  const scoreZero = clubScale?.zero ?? comparison.metricType.score_zero?.toNumber() ?? null;
+  const scoreHundred = clubScale?.hundred ?? comparison.metricType.score_hundred?.toNumber() ?? null;
   return {
     id: comparison.metricType.id,
     code: comparison.metricType.code,
@@ -275,6 +373,8 @@ function toOverviewEntry(comparison: MetricComparison): MetricOverviewEntry {
     percentage: comparison.percentage,
     status: comparison.status,
     measuredAt: comparison.currentMeasurement?.mesure_le ?? null,
+    score: computeSkillScore(comparison.currentValue, scoreZero, scoreHundred),
+    previousScore: computeSkillScore(comparison.previousValue, scoreZero, scoreHundred),
   };
 }
 

@@ -20,6 +20,7 @@ model app_user {
   metric_measurement metric_measurement[]
   coach_profile      coach_profile?
   wt_links_decided   athlete_wt_link[]    @relation("wt_link_decider")
+  club_scales_edited club_metric_scale[]  @relation("club_scale_editor")
 
   // Ticket "Notifications in-app Coach + Athlete V1" : une notification
   // appartient toujours à app_user (jamais directement athlete_id/coach_id),
@@ -91,6 +92,7 @@ model club {
   athlete          athlete[]
   coach_profile    coach_profile[]
   club_invitation  club_invitation[]
+  metric_scales    club_metric_scale[]
 }
 
 model competition {
@@ -455,8 +457,35 @@ model metric_type {
   unite                 String?              @db.VarChar(50)
   description           String?
   improvement_direction String?              @db.VarChar(10)
+  // Barème de l'étoile de compétences : valeur mesurée qui vaut 0/100 et
+  // celle qui vaut 100/100 (pour une capacité "lower", score_zero est la
+  // plus GRANDE valeur, ex. temps de réaction 600 ms -> 0, 250 ms -> 100).
+  // Null = capacité absente de l'étoile (jamais une note inventée).
+  score_zero            Decimal?             @db.Decimal(10, 2)
+  score_hundred         Decimal?             @db.Decimal(10, 2)
   created_at            DateTime?            @default(now()) @db.Timestamp(6)
   metric_measurement    metric_measurement[]
+  club_scales           club_metric_scale[]
+}
+
+// Barème de l'étoile de compétences décidé par les coachs d'un CLUB pour une
+// capacité : remplace, pour les athlètes de ce club (athlete.club_id), le
+// barème par défaut de metric_type (score_zero/score_hundred). Une seule
+// ligne par (club, capacité) ; supprimer la ligne = revenir au défaut.
+// Même sens que le défaut : pour une capacité "lower", score_zero > score_hundred.
+model club_metric_scale {
+  id                 String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  club_id            String      @db.Uuid
+  metric_type_id     String      @db.Uuid
+  score_zero         Decimal     @db.Decimal(10, 2)
+  score_hundred      Decimal     @db.Decimal(10, 2)
+  updated_by_user_id String?     @db.Uuid
+  updated_at         DateTime    @default(now()) @db.Timestamp(6)
+  club               club        @relation(fields: [club_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  metric_type        metric_type @relation(fields: [metric_type_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  updated_by         app_user?   @relation("club_scale_editor", fields: [updated_by_user_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([club_id, metric_type_id])
 }
 
 model participation {

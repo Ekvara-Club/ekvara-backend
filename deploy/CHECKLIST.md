@@ -4,10 +4,10 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 
 ## A. Code (vérifié automatiquement)
 
-- ✅ Backend : 1 459 tests (tests unitaires, HTTP, intégration PostgreSQL), build OK
+- ✅ Backend : 1 477 tests (tests unitaires, HTTP, intégration PostgreSQL), build OK
   - ⚠️ `coach-metrics-dashboard.spec` échoue parfois en suite complète (DB partagée), passe seul
-- ✅ App athlète : 207 tests, build OK, chaque page chargée à la demande
-- ✅ App coach : 92 tests, build OK
+- ✅ App athlète : 211 tests, build OK, chaque page chargée à la demande
+- ✅ App coach : 100 tests, build OK
 - ✅ Migrations : toutes additives, aucune destructive
 - ✅ CORS, proxy, cookies Secure configurables par `.env` (CORS obligatoire en production)
 - ✅ Imports de compétitions fermés sur Internet (CLI à la place)
@@ -35,6 +35,7 @@ Coach :
 - ⬜ Créer une séance récurrente (ex. tous les mercredis, 1 mois) → bon nombre de séances, bonnes heures
 - ⬜ Annuler la suite d'une série
 - ⬜ Préparer une compétition pour un athlète
+- ⬜ Fiche athlète : étoile de compétences dans Progression (contour pointillé = évaluation précédente) ; « Barème » : modifier une capacité, l'étoile se recalcule (aussi côté athlète)
 - ⬜ Voir l'état d'un athlète (badge dans la liste, fiche, « À surveiller ») et ouvrir sa fiche depuis la notification
 - ⬜ Demande de profil World Taekwondo : notification, « À surveiller », Confirmer puis Refuser (sur un autre athlète)
 
@@ -44,7 +45,7 @@ Athlète :
 - ⬜ Activité : voit les séances du coach (dont la série), ajoute un entraînement
 - ⬜ Notifications : « Nouvel entraînement récurrent », un seul message
 - ⬜ Poids : ajouter une pesée
-- ⬜ Objectifs, Progression, Exercices : pages chargées
+- ⬜ Objectifs, Progression, Exercices : pages chargées ; étoile de compétences (Progression + Passeport) après 3 capacités évaluées
 - ⬜ Compétitions : catalogue, filtres, fiche ; s'inscrire à une compétition
 - ⬜ Passeport : renseigner un résultat passé
 - ⬜ Passeport « Mon état » : passer Blessé (précision + date de retour), puis revenir Actif
@@ -57,5 +58,7 @@ Sécurité :
 - ⬜ Cookies : `Secure`, `HttpOnly` (outils développeur du navigateur)
 
 ## D. Décisions en attente
+
+- ℹ️ Barème de l'étoile : réglé par les coachs de chaque club (fiche athlète > Progression > « Barème ») ; défaut tant qu'un club ne l'a pas réglé : points 0→100, force 40→140 kg, souplesse 0→50 cm, temps de réaction 600→250 ms
 
 - ⚠️ Contraste du gris secondaire `ekvara-muted` (2,41:1, sous le minimum WCAG) — non bloquant

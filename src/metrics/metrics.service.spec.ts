@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
 import { compareMeasurements, computePercentage, MetricsService } from "./metrics.service";
 import { MetricsRepository } from "./metrics.repository";
 import { Prisma } from "../../generated/prisma/client";
@@ -71,6 +71,10 @@ describe("MetricsService", () => {
     createMeasurement: jest.Mock;
     findMeasurementsByAthleteAndMetric: jest.Mock;
     findLastTwoMeasurements: jest.Mock;
+    findAthleteClubId: jest.Mock;
+    findCoachClubId: jest.Mock;
+    findClubScales: jest.Mock;
+    saveClubScales: jest.Mock;
   };
 
   const ATHLETE_ID = "240fe60f-6e74-46ea-87a0-45872bd1f4fe";
@@ -108,6 +112,11 @@ describe("MetricsService", () => {
       createMeasurement: jest.fn(),
       findMeasurementsByAthleteAndMetric: jest.fn(),
       findLastTwoMeasurements: jest.fn(),
+      // Défaut : athlète sans club -> barème par défaut des metric_type.
+      findAthleteClubId: jest.fn().mockResolvedValue(null),
+      findCoachClubId: jest.fn(),
+      findClubScales: jest.fn().mockResolvedValue([]),
+      saveClubScales: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -527,6 +536,97 @@ describe("MetricsService", () => {
       expect(highlights.highlights.map((h) => h.code)).toEqual(["force"]);
       expect(overview.metrics.map((m) => m.code)).toEqual(["force", "technique", "souplesse"]);
       expect(overview.metrics.map((m) => m.status)).toEqual(["improved", "regressed", "unknown"]);
+    });
+  });
+
+  describe("étoile de compétences — barème du club", () => {
+    const CLUB_ID = "c1c1c1c1-0000-4000-8000-000000000001";
+    const reactionType = () =>
+      ({
+        id: METRIC_TYPE_ID, code: "temps_reaction", nom: "Temps de réaction", unite: "ms", description: null,
+        improvement_direction: "lower", created_at: new Date(),
+        score_zero: new Prisma.Decimal(600), score_hundred: new Prisma.Decimal(250),
+      }) as never;
+    const m = (value: number, at: string) => ({
+      id: `m-${value}`, athlete_id: ATHLETE_ID, metric_type_id: METRIC_TYPE_ID, valeur: new Prisma.Decimal(value),
+      mesure_le: new Date(at), coach_user_id: null, commentaire: null, created_at: new Date(at),
+    });
+
+    beforeEach(() => {
+      repository.athleteExists.mockResolvedValue(true);
+      repository.findAllMetricTypes.mockResolvedValue([reactionType()]);
+      repository.findLastTwoMeasurements.mockResolvedValue([m(380, "2026-09-08"), m(420, "2026-09-01")]);
+    });
+
+    it("athlète sans club : barème par défaut du metric_type", async () => {
+      const overview = await service.getOverview(ATHLETE_ID);
+      expect(overview.metrics[0]).toEqual(expect.objectContaining({ score: 63, previousScore: 51 }));
+    });
+
+    it("athlète d'un club avec barème : celui du club remplace le défaut", async () => {
+      repository.findAthleteClubId.mockResolvedValue(CLUB_ID);
+      repository.findClubScales.mockResolvedValue([
+        { metric_type_id: METRIC_TYPE_ID, score_zero: new Prisma.Decimal(500), score_hundred: new Prisma.Decimal(300), updated_at: new Date() },
+      ]);
+
+      const overview = await service.getOverview(ATHLETE_ID);
+
+      expect(repository.findClubScales).toHaveBeenCalledWith(CLUB_ID);
+      expect(overview.metrics[0]).toEqual(expect.objectContaining({ score: 60, previousScore: 40 }));
+    });
+
+    it("coach sans club : 409, rien lu ni écrit", async () => {
+      repository.findCoachClubId.mockResolvedValue(null);
+      await expect(service.getClubScales(COACH_ID)).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.saveClubScales(COACH_ID, "u-coach", [])).rejects.toBeInstanceOf(ConflictException);
+      expect(repository.saveClubScales).not.toHaveBeenCalled();
+    });
+
+    it("lecture : défaut, barème du club et barème appliqué par capacité", async () => {
+      repository.findCoachClubId.mockResolvedValue(CLUB_ID);
+      repository.findClubScales.mockResolvedValue([
+        { metric_type_id: METRIC_TYPE_ID, score_zero: new Prisma.Decimal(500), score_hundred: new Prisma.Decimal(300), updated_at: new Date() },
+      ]);
+
+      const { scales } = await service.getClubScales(COACH_ID);
+
+      expect(scales[0]).toEqual(
+        expect.objectContaining({
+          name: "Temps de réaction",
+          direction: "lower",
+          default: { scoreZero: 600, scoreHundred: 250 },
+          club: { scoreZero: 500, scoreHundred: 300 },
+          effective: { scoreZero: 500, scoreHundred: 300 },
+        }),
+      );
+    });
+
+    it.each([
+      ["une seule valeur", { scoreZero: 500, scoreHundred: null }, /les deux valeurs/],
+      ["valeurs égales", { scoreZero: 400, scoreHundred: 400 }, /différentes/],
+      ["mauvais sens pour une capacité « lower »", { scoreZero: 250, scoreHundred: 600 }, /plus bas = meilleur/],
+    ])("enregistrement refusé (%s) : 400 lisible, rien écrit", async (_label, values, message) => {
+      repository.findCoachClubId.mockResolvedValue(CLUB_ID);
+
+      const promise = service.saveClubScales(COACH_ID, "u-coach", [{ metricTypeId: METRIC_TYPE_ID, ...values }]);
+
+      await expect(promise).rejects.toBeInstanceOf(BadRequestException);
+      await expect(promise).rejects.toThrow(message);
+      expect(repository.saveClubScales).not.toHaveBeenCalled();
+    });
+
+    it("enregistrement : barèmes complets enregistrés, null/null = retour au défaut ; capacité inconnue -> 404", async () => {
+      repository.findCoachClubId.mockResolvedValue(CLUB_ID);
+
+      await service.saveClubScales(COACH_ID, "u-coach", [{ metricTypeId: METRIC_TYPE_ID, scoreZero: 500, scoreHundred: 300 }]);
+      expect(repository.saveClubScales).toHaveBeenLastCalledWith(CLUB_ID, "u-coach", [{ metricTypeId: METRIC_TYPE_ID, scoreZero: 500, scoreHundred: 300 }], []);
+
+      await service.saveClubScales(COACH_ID, "u-coach", [{ metricTypeId: METRIC_TYPE_ID, scoreZero: null, scoreHundred: null }]);
+      expect(repository.saveClubScales).toHaveBeenLastCalledWith(CLUB_ID, "u-coach", [], [METRIC_TYPE_ID]);
+
+      await expect(
+        service.saveClubScales(COACH_ID, "u-coach", [{ metricTypeId: "00000000-0000-4000-8000-000000000000", scoreZero: 1, scoreHundred: 2 }]),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

@@ -38,6 +38,7 @@ import { CoachTrainingAttendanceRepository } from "./coach-training-attendance.r
 import { CoachGroupDashboardController } from "./coach-group-dashboard.controller";
 import { CoachGroupDashboardService } from "./coach-group-dashboard.service";
 import { CoachInvitationsController } from "./coach-invitations.controller";
+import { CoachMetricScalesController } from "./coach-metric-scales.controller";
 
 @Module({
   // AthletesModule : réutilise AthletesService.findOne() pour GET
@@ -68,6 +69,7 @@ import { CoachInvitationsController } from "./coach-invitations.controller";
     CoachAthleteWeightsController,
     CoachAthleteGoalsController,
     CoachAthleteMetricsController,
+    CoachMetricScalesController,
     CoachCompetitionsController,
     CoachCompetitionPreparationsController,
     CoachTrainingAttendanceController,

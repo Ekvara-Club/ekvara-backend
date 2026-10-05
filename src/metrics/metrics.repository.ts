@@ -34,6 +34,48 @@ export class MetricsRepository {
     return this.prisma.metric_type.findMany({ orderBy: { code: "asc" } });
   }
 
+  // Étoile de compétences : barème du club de l'athlète (null = athlète sans
+  // club -> barème par défaut des metric_type).
+  async findAthleteClubId(athleteId: string): Promise<string | null> {
+    const athlete = await this.prisma.athlete.findUnique({ where: { id: athleteId }, select: { club_id: true } });
+    return athlete?.club_id ?? null;
+  }
+
+  async findCoachClubId(coachId: string): Promise<string | null> {
+    const coach = await this.prisma.coach_profile.findUnique({ where: { id: coachId }, select: { club_id: true } });
+    return coach?.club_id ?? null;
+  }
+
+  findClubScales(clubId: string) {
+    return this.prisma.club_metric_scale.findMany({
+      where: { club_id: clubId },
+      select: { metric_type_id: true, score_zero: true, score_hundred: true, updated_at: true },
+    });
+  }
+
+  // Remplacement transactionnel : upsert des barèmes fournis, suppression
+  // (= retour au défaut) de ceux explicitement remis à null.
+  async saveClubScales(
+    clubId: string,
+    userId: string,
+    upserts: { metricTypeId: string; scoreZero: number; scoreHundred: number }[],
+    resets: string[],
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      if (resets.length > 0) {
+        await tx.club_metric_scale.deleteMany({ where: { club_id: clubId, metric_type_id: { in: resets } } });
+      }
+      for (const item of upserts) {
+        const data = { score_zero: item.scoreZero, score_hundred: item.scoreHundred, updated_by_user_id: userId, updated_at: new Date() };
+        await tx.club_metric_scale.upsert({
+          where: { club_id_metric_type_id: { club_id: clubId, metric_type_id: item.metricTypeId } },
+          create: { club_id: clubId, metric_type_id: item.metricTypeId, ...data },
+          update: data,
+        });
+      }
+    });
+  }
+
   createMeasurement(
     athleteId: string,
     metricTypeId: string,
