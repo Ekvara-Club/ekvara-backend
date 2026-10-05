@@ -94,10 +94,13 @@ describe("Évaluations coach — metric_measurement (intégration Postgres)", ()
     expect(forceEntry?.status).toBe("improved"); // 80 -> 85, direction "higher"
   });
 
+  // Dates de mesure explicites : deux mesures créées dans la même
+  // milliseconde (mesure_le = now()) avaient un ordre indéterminé, et le
+  // test inversait parfois "dernière" et "précédente" (instable).
   it("Force 80 -> 85 (higher) = improved", async () => {
     const athleteA = await makeAthlete("A");
-    await metricsService.createMeasurement(athleteA, forceTypeId, { value: 80 });
-    await metricsService.createMeasurement(athleteA, forceTypeId, { value: 85 });
+    await metricsService.createMeasurement(athleteA, forceTypeId, { value: 80, measuredAt: "2026-09-01T10:00:00.000Z" });
+    await metricsService.createMeasurement(athleteA, forceTypeId, { value: 85, measuredAt: "2026-09-08T10:00:00.000Z" });
 
     const overview = await metricsService.getOverview(athleteA);
     expect(overview.metrics.find((m) => m.id === forceTypeId)?.status).toBe("improved");
@@ -105,19 +108,23 @@ describe("Évaluations coach — metric_measurement (intégration Postgres)", ()
 
   it("Temps de réaction 420ms -> 380ms (lower) = improved — CAS CRITIQUE, jamais déterminé depuis le signe brut du delta", async () => {
     const athleteA = await makeAthlete("A");
-    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 420 });
-    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 380 });
+    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 420, measuredAt: "2026-09-01T10:00:00.000Z" });
+    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 380, measuredAt: "2026-09-08T10:00:00.000Z" });
 
     const overview = await metricsService.getOverview(athleteA);
     const entry = overview.metrics.find((m) => m.id === reactionTypeId);
     expect(entry?.status).toBe("improved");
     expect(entry?.delta).toBe(-40); // delta brut négatif, mais bien "improved"
+    // Étoile de compétences, barème réel du metric_type (600 ms -> 0, 250 ms
+    // -> 100) : plus bas = meilleure note.
+    expect(entry?.score).toBe(63);
+    expect(entry?.previousScore).toBe(51);
   });
 
   it("Technique 60 -> 55 (higher) = declining (regressed)", async () => {
     const athleteA = await makeAthlete("A");
-    await metricsService.createMeasurement(athleteA, techniqueTypeId, { value: 60 });
-    await metricsService.createMeasurement(athleteA, techniqueTypeId, { value: 55 });
+    await metricsService.createMeasurement(athleteA, techniqueTypeId, { value: 60, measuredAt: "2026-09-01T10:00:00.000Z" });
+    await metricsService.createMeasurement(athleteA, techniqueTypeId, { value: 55, measuredAt: "2026-09-08T10:00:00.000Z" });
 
     const overview = await metricsService.getOverview(athleteA);
     expect(overview.metrics.find((m) => m.id === techniqueTypeId)?.status).toBe("regressed");
