@@ -1,7 +1,9 @@
-import { Controller, Get, Param, ParseUUIDPipe, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseUUIDPipe, Put, Req, UseGuards } from "@nestjs/common";
+import type { Request } from "express";
 import { AthleteOwnershipGuard } from "../auth/athlete-ownership.guard";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AthletesService } from "./athletes.service";
+import { UpdateAthleteConditionDto } from "./dto/update-athlete-condition.dto";
 
 // POST /athletes (création publique, sans invitation) a été retiré (voir
 // ticket "Clubs, invitations & inscription Athlete contrôlée V1"
@@ -19,5 +21,17 @@ export class AthletesController {
   @UseGuards(JwtAuthGuard, AthleteOwnershipGuard)
   findOne(@Param("id", ParseUUIDPipe) id: string) {
     return this.athletesService.findOne(id);
+  }
+
+  // État de forme : seul l'athlète lui-même le déclare (ownership), ses
+  // coachs le lisent via leurs propres vues (dashboard, fiche athlète).
+  @Put(":id/condition")
+  @UseGuards(JwtAuthGuard, AthleteOwnershipGuard)
+  updateCondition(
+    @Req() req: Request,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body() dto: UpdateAthleteConditionDto,
+  ) {
+    return this.athletesService.updateCondition(id, req.user!.sub, dto);
   }
 }

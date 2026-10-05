@@ -15,7 +15,7 @@ import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/au
 // athlete désormais.
 describe("AthletesController (HTTP)", () => {
   let app: INestApplication;
-  let service: { create: jest.Mock; findOne: jest.Mock };
+  let service: { create: jest.Mock; findOne: jest.Mock; updateCondition: jest.Mock };
 
   const VALID_ATHLETE_ID = "240fe60f-6e74-46ea-87a0-45872bd1f4fe";
   const OTHER_ATHLETE_ID = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -24,7 +24,7 @@ describe("AthletesController (HTTP)", () => {
   let otherAthleteAuthCookie: string;
 
   beforeEach(async () => {
-    service = { create: jest.fn(), findOne: jest.fn() };
+    service = { create: jest.fn(), findOne: jest.fn(), updateCondition: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule()],
@@ -87,5 +87,45 @@ describe("AthletesController (HTTP)", () => {
 
     expect(res.body.id).toBe(VALID_ATHLETE_ID);
     expect(service.findOne).toHaveBeenCalledWith(VALID_ATHLETE_ID);
+  });
+
+  describe("PUT /athletes/:id/condition", () => {
+    it("sans authentification -> 401", async () => {
+      await request(app.getHttpServer()).put(`/athletes/${VALID_ATHLETE_ID}/condition`).send({ status: "blesse" }).expect(401);
+      expect(service.updateCondition).not.toHaveBeenCalled();
+    });
+
+    it("état d'un AUTRE athlète -> 403 (jamais déclarer pour quelqu'un d'autre)", async () => {
+      await request(app.getHttpServer())
+        .put(`/athletes/${VALID_ATHLETE_ID}/condition`)
+        .set("Cookie", otherAthleteAuthCookie)
+        .send({ status: "blesse" })
+        .expect(403);
+      expect(service.updateCondition).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["statut inconnu", { status: "en_vacances" }],
+      ["date non YYYY-MM-DD", { status: "blesse", expectedReturn: "20/10/2026" }],
+      ["commentaire > 255 caractères", { status: "malade", note: "x".repeat(256) }],
+    ])("%s -> 400", async (_label, body) => {
+      await request(app.getHttpServer())
+        .put(`/athletes/${VALID_ATHLETE_ID}/condition`)
+        .set("Cookie", authCookie)
+        .send(body)
+        .expect(400);
+      expect(service.updateCondition).not.toHaveBeenCalled();
+    });
+
+    it("propriétaire -> 200, acteur issu du JWT", async () => {
+      service.updateCondition.mockResolvedValue({ status: "blesse", note: "Cheville", expectedReturn: null, updatedAt: null });
+      const res = await request(app.getHttpServer())
+        .put(`/athletes/${VALID_ATHLETE_ID}/condition`)
+        .set("Cookie", authCookie)
+        .send({ status: "blesse", note: "Cheville" })
+        .expect(200);
+      expect(res.body.status).toBe("blesse");
+      expect(service.updateCondition).toHaveBeenCalledWith(VALID_ATHLETE_ID, "user-1", { status: "blesse", note: "Cheville" });
+    });
   });
 });

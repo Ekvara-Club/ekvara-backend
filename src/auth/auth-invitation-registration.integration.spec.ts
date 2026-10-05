@@ -6,6 +6,7 @@ import { AthletesService } from "../athletes/athletes.service";
 import { InvitationsService } from "../invitations/invitations.service";
 import { InvitationsRepository } from "../invitations/invitations.repository";
 import { AuthService } from "./auth.service";
+import { NotificationsRepository } from "../notifications/notifications.repository";
 
 // Test d'intégration contre la vraie base Postgres locale : l'usage unique
 // sous concurrence (contrainte code_hash + UPDATE conditionnel, voir
@@ -29,7 +30,7 @@ describe("Register via invitation de club (intégration Postgres)", () => {
 
   beforeAll(() => {
     prisma = new PrismaService();
-    athletesService = new AthletesService(prisma);
+    athletesService = new AthletesService(prisma, new NotificationsRepository(prisma));
     invitationsService = new InvitationsService(prisma, new InvitationsRepository(prisma));
     authService = new AuthService(
       prisma,

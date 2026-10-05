@@ -78,6 +78,15 @@ export interface ProgressionView {
   overallStatus: null;
 }
 
+// État de forme déclaré par l'athlète lui-même (PUT /athletes/:id/condition),
+// jamais déduit ici. expectedReturn : date métier YYYY-MM-DD.
+export interface AthleteConditionView {
+  status: string;
+  note: string | null;
+  expectedReturn: string | null;
+  updatedAt: Date | null;
+}
+
 export interface AthleteDashboardSummary {
   id: string;
   firstName: string | null;
@@ -85,6 +94,7 @@ export interface AthleteDashboardSummary {
   ageCategory: string | null;
   grade: string | null;
   sportLevel: string | null;
+  condition: AthleteConditionView;
   groups: AthleteGroupRef[];
   weight: WeightSummaryView;
   progression: ProgressionView;
@@ -99,6 +109,11 @@ export type AttentionReasonType =
   | "NO_WEIGHT_TARGET"
   | "METRIC_DECLINING"
   | "NO_METRIC_DATA"
+  // État de forme déclaré par l'athlète (tout sauf "actif") : un fait
+  // déclaré, jamais un jugement — produit pour le dashboard global ET groupe.
+  | "CONDITION_INJURED"
+  | "CONDITION_SICK"
+  | "CONDITION_ABSENT"
   // Ticket "Dashboard groupe Coach V1" §21-25 : jamais produites par
   // buildAttentionList (dashboard global, inchangé) — uniquement par
   // CoachGroupDashboardService, qui les ajoute par-dessus
@@ -179,6 +194,7 @@ interface AthleteBaseRow {
   niveauSportif: string | null;
   firstName: string | null;
   lastName: string | null;
+  condition: AthleteConditionView;
 }
 
 // hasAnyMeasurement n'est jamais exposé tel quel dans ProgressionView (le
@@ -277,6 +293,12 @@ export class CoachDashboardService {
       niveauSportif: link.athlete.niveau_sportif,
       firstName: link.athlete.app_user.prenom,
       lastName: link.athlete.app_user.nom,
+      condition: {
+        status: link.athlete.etat_forme,
+        note: link.athlete.etat_forme_note,
+        expectedReturn: link.athlete.etat_forme_retour ? link.athlete.etat_forme_retour.toISOString().slice(0, 10) : null,
+        updatedAt: link.athlete.etat_forme_updated_at,
+      },
     }));
 
     if (!groupId) {
@@ -595,6 +617,7 @@ function toAthleteDashboardSummary(computed: AthleteComputed): AthleteDashboardS
     ageCategory: computed.base.categorieAge,
     grade: computed.base.grade,
     sportLevel: computed.base.niveauSportif,
+    condition: computed.base.condition,
     groups: computed.groups,
     weight: computed.weight,
     progression: computed.progression,
@@ -762,8 +785,20 @@ export function buildUpcomingCompetitions(computed: AthleteComputed[]): Upcoming
 // (inchangé). CoachGroupDashboardService appelle cette même fonction puis
 // ajoute par-dessus ATTENDANCE_LOW/GOAL_OVERDUE/PREPARATION_FORFAIT — jamais
 // une réinterprétation séparée des mêmes règles poids/métrique.
+const CONDITION_REASONS: Record<string, AttentionReasonType> = {
+  blesse: "CONDITION_INJURED",
+  malade: "CONDITION_SICK",
+  absent: "CONDITION_ABSENT",
+};
+
 export function computeBaseAttentionReasons(athlete: AthleteComputed): AttentionReason[] {
   const reasons: AttentionReason[] = [];
+
+  // En tête : c'est l'information la plus immédiate pour le coach.
+  const conditionReason = CONDITION_REASONS[athlete.base.condition.status];
+  if (conditionReason) {
+    reasons.push({ type: conditionReason });
+  }
 
   if (athlete.weight.target === null) {
     reasons.push({ type: "NO_WEIGHT_TARGET" });

@@ -36,6 +36,15 @@ model athlete {
   grade                         String?                         @db.VarChar(100)
   date_naissance                DateTime?                       @db.Date
   niveau_sportif                String?                         @db.VarChar(50)
+  // État de forme déclaré par l'athlète lui-même (PUT /athletes/:id/condition),
+  // visible par ses coachs. Convention varchar contrôlée en application
+  // (ATHLETE_CONDITIONS), jamais un enum Prisma : "actif" | "malade" |
+  // "blesse" | "absent". Seul l'état ACTUEL est conservé (pas d'historique
+  // en V1). note/retour toujours NULL quand l'état est "actif".
+  etat_forme                    String                          @default("actif") @db.VarChar(20)
+  etat_forme_note               String?                         @db.VarChar(255)
+  etat_forme_retour             DateTime?                       @db.Date
+  etat_forme_updated_at         DateTime?                       @db.Timestamp(6)
   created_at                    DateTime?                       @default(now()) @db.Timestamp(6)
   updated_at                    DateTime?                       @default(now()) @db.Timestamp(6)
   club                          club?                           @relation(fields: [club_id], references: [id], onUpdate: NoAction)

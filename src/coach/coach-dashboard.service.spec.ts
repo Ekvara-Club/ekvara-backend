@@ -33,6 +33,10 @@ describe("CoachDashboardService", () => {
         categorie_age: "senior",
         grade: "1er dan",
         niveau_sportif: "national",
+        etat_forme: "actif",
+        etat_forme_note: null,
+        etat_forme_retour: null,
+        etat_forme_updated_at: null,
         app_user: { id: `u-${id}`, email: `${id}@test.fr`, nom, prenom },
         ...overrides,
       },
@@ -234,6 +238,32 @@ describe("CoachDashboardService", () => {
 
       expect(dashboard.summary.athletesWithoutWeightTarget).toBe(1);
       expect(dashboard.athletesNeedingAttention[0].reasons).toContainEqual({ type: "NO_WEIGHT_TARGET" });
+    });
+
+    it("état de forme déclaré : exposé tel quel, raison en tête de « À surveiller » ; Actif ne produit aucune raison", async () => {
+      coachRepository.findAthletesForCoach.mockResolvedValue([
+        athleteLink("a-1", "Kais", "Ali", {
+          etat_forme: "blesse",
+          etat_forme_note: "Entorse cheville",
+          etat_forme_retour: new Date("2026-10-20T00:00:00.000Z"),
+          etat_forme_updated_at: new Date("2026-10-05T10:00:00.000Z"),
+        }),
+        athleteLink("a-2", "Lina", "B"),
+      ]);
+
+      const dashboard = await service.getDashboard(COACH_ID);
+      const summaries = await service.getAthleteSummaries(COACH_ID);
+
+      const injured = dashboard.athletesNeedingAttention.find((a) => a.athlete.id === "a-1")!;
+      expect(injured.reasons[0]).toEqual({ type: "CONDITION_INJURED" });
+      const active = dashboard.athletesNeedingAttention.find((a) => a.athlete.id === "a-2");
+      expect(active?.reasons ?? []).not.toContainEqual(expect.objectContaining({ type: expect.stringMatching(/^CONDITION_/) }));
+      expect(summaries.find((a) => a.id === "a-1")?.condition).toEqual({
+        status: "blesse",
+        note: "Entorse cheville",
+        expectedReturn: "2026-10-20",
+        updatedAt: new Date("2026-10-05T10:00:00.000Z"),
+      });
     });
 
     it("weeklyChange calculé en mémoire, cohérent avec l'algorithme WeightsService (référence >= 7 jours)", async () => {
