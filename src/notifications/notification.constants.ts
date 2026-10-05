@@ -20,6 +20,10 @@ export const NOTIFICATION_TYPES = [
   // Premier type produit pour le contexte COACH : un athlète change son
   // état de forme (voir AthletesService.updateCondition).
   "ATHLETE_CONDITION_UPDATED",
+  // Lien compte EKVARA <-> profil World Taekwondo (voir WtLinksService).
+  "WT_PROFILE_LINK_REQUESTED",
+  "WT_PROFILE_LINK_CONFIRMED",
+  "WT_PROFILE_LINK_REJECTED",
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
@@ -34,6 +38,9 @@ export const EXERCISE_ASSIGNED: NotificationType = "EXERCISE_ASSIGNED";
 export const GOAL_UPDATED: NotificationType = "GOAL_UPDATED";
 export const WEIGHT_TARGET_UPDATED: NotificationType = "WEIGHT_TARGET_UPDATED";
 export const ATHLETE_CONDITION_UPDATED: NotificationType = "ATHLETE_CONDITION_UPDATED";
+export const WT_PROFILE_LINK_REQUESTED: NotificationType = "WT_PROFILE_LINK_REQUESTED";
+export const WT_PROFILE_LINK_CONFIRMED: NotificationType = "WT_PROFILE_LINK_CONFIRMED";
+export const WT_PROFILE_LINK_REJECTED: NotificationType = "WT_PROFILE_LINK_REJECTED";
 
 // Un app_user peut posséder à la fois athlete et coach_profile (compte
 // hybride, voir JwtPayload) : `context` distingue l'interface pour laquelle
@@ -55,6 +62,8 @@ export const NOTIFICATION_RESOURCE_TYPES = [
   "WEIGHT_TARGET",
   "COMPETITION",
   "ATHLETE",
+  // Le profil WT de l'athlète (deep-link athlète : son Passeport).
+  "WT_PROFILE",
 ] as const;
 
 export type NotificationResourceType = (typeof NOTIFICATION_RESOURCE_TYPES)[number];
@@ -64,3 +73,4 @@ export const EXERCISE_RESOURCE: NotificationResourceType = "EXERCISE";
 export const GOAL_RESOURCE: NotificationResourceType = "GOAL";
 export const WEIGHT_TARGET_RESOURCE: NotificationResourceType = "WEIGHT_TARGET";
 export const ATHLETE_RESOURCE: NotificationResourceType = "ATHLETE";
+export const WT_PROFILE_RESOURCE: NotificationResourceType = "WT_PROFILE";

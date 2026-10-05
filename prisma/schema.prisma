@@ -19,6 +19,7 @@ model app_user {
   athlete            athlete?
   metric_measurement metric_measurement[]
   coach_profile      coach_profile?
+  wt_links_decided   athlete_wt_link[]    @relation("wt_link_decider")
 
   // Ticket "Notifications in-app Coach + Athlete V1" : une notification
   // appartient toujours à app_user (jamais directement athlete_id/coach_id),
@@ -61,6 +62,7 @@ model athlete {
   coach_exercise_assignment     coach_exercise_assignment[]
   coach_competition_preparation coach_competition_preparation[]
   training_attendance           training_attendance[]
+  wt_link                       athlete_wt_link?
 }
 
 model athlete_goal {
@@ -220,6 +222,31 @@ model external_athlete {
   matches_as_a competition_match[]       @relation("match_athlete_a")
   matches_as_b competition_match[]       @relation("match_athlete_b")
   matches_won  competition_match[]       @relation("match_winner")
+  athlete_links athlete_wt_link[]
+}
+
+// Lien entre un compte EKVARA (athlete) et SON profil public World Taekwondo
+// (external_athlete). Jamais créé automatiquement : l'athlète le réclame
+// (status "pending"), son coach le confirme ("confirmed") ou le refuse (la
+// ligne est alors supprimée) — un profil public ne devient jamais celui d'un
+// utilisateur sur la seule foi d'un nom (homonymes, aucune date de naissance
+// chez WT). Un athlète a au plus UN lien (athlete_id unique) ; un même
+// profil WT n'est confirmé que pour un seul compte (vérifié en service, dans
+// la transaction de confirmation). status : convention varchar contrôlée en
+// application ("pending" | "confirmed"), jamais un enum Prisma.
+model athlete_wt_link {
+  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  athlete_id          String           @unique @db.Uuid
+  external_athlete_id String           @db.Uuid
+  status              String           @db.VarChar(20)
+  requested_at        DateTime         @default(now()) @db.Timestamp(6)
+  decided_at          DateTime?        @db.Timestamp(6)
+  decided_by_user_id  String?          @db.Uuid
+  athlete             athlete          @relation(fields: [athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  external_athlete    external_athlete @relation(fields: [external_athlete_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  decided_by          app_user?        @relation("wt_link_decider", fields: [decided_by_user_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([external_athlete_id])
 }
 
 // Provenance + identité d'un external_athlete pour UNE source. Pour WT

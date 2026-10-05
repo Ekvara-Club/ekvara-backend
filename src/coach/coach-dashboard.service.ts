@@ -87,6 +87,15 @@ export interface AthleteConditionView {
   updatedAt: Date | null;
 }
 
+// Profil World Taekwondo relié (ou demandé) par l'athlète — voir
+// athlete_wt_link. status "pending" = en attente de la décision du coach.
+export interface AthleteWtProfileView {
+  status: string;
+  externalAthleteId: string;
+  displayName: string;
+  countryCode: string | null;
+}
+
 export interface AthleteDashboardSummary {
   id: string;
   firstName: string | null;
@@ -95,6 +104,7 @@ export interface AthleteDashboardSummary {
   grade: string | null;
   sportLevel: string | null;
   condition: AthleteConditionView;
+  wtProfile: AthleteWtProfileView | null;
   groups: AthleteGroupRef[];
   weight: WeightSummaryView;
   progression: ProgressionView;
@@ -114,6 +124,8 @@ export type AttentionReasonType =
   | "CONDITION_INJURED"
   | "CONDITION_SICK"
   | "CONDITION_ABSENT"
+  // Demande de lien vers un profil World Taekwondo à confirmer/refuser.
+  | "WT_LINK_PENDING"
   // Ticket "Dashboard groupe Coach V1" §21-25 : jamais produites par
   // buildAttentionList (dashboard global, inchangé) — uniquement par
   // CoachGroupDashboardService, qui les ajoute par-dessus
@@ -195,6 +207,7 @@ interface AthleteBaseRow {
   firstName: string | null;
   lastName: string | null;
   condition: AthleteConditionView;
+  wtProfile: AthleteWtProfileView | null;
 }
 
 // hasAnyMeasurement n'est jamais exposé tel quel dans ProgressionView (le
@@ -299,6 +312,14 @@ export class CoachDashboardService {
         expectedReturn: link.athlete.etat_forme_retour ? link.athlete.etat_forme_retour.toISOString().slice(0, 10) : null,
         updatedAt: link.athlete.etat_forme_updated_at,
       },
+      wtProfile: link.athlete.wt_link
+        ? {
+            status: link.athlete.wt_link.status,
+            externalAthleteId: link.athlete.wt_link.external_athlete.id,
+            displayName: link.athlete.wt_link.external_athlete.display_name,
+            countryCode: link.athlete.wt_link.external_athlete.country_code,
+          }
+        : null,
     }));
 
     if (!groupId) {
@@ -618,6 +639,7 @@ function toAthleteDashboardSummary(computed: AthleteComputed): AthleteDashboardS
     grade: computed.base.grade,
     sportLevel: computed.base.niveauSportif,
     condition: computed.base.condition,
+    wtProfile: computed.base.wtProfile,
     groups: computed.groups,
     weight: computed.weight,
     progression: computed.progression,
@@ -798,6 +820,9 @@ export function computeBaseAttentionReasons(athlete: AthleteComputed): Attention
   const conditionReason = CONDITION_REASONS[athlete.base.condition.status];
   if (conditionReason) {
     reasons.push({ type: conditionReason });
+  }
+  if (athlete.base.wtProfile?.status === "pending") {
+    reasons.push({ type: "WT_LINK_PENDING" });
   }
 
   if (athlete.weight.target === null) {

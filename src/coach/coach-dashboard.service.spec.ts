@@ -37,6 +37,7 @@ describe("CoachDashboardService", () => {
         etat_forme_note: null,
         etat_forme_retour: null,
         etat_forme_updated_at: null,
+        wt_link: null,
         app_user: { id: `u-${id}`, email: `${id}@test.fr`, nom, prenom },
         ...overrides,
       },
@@ -264,6 +265,25 @@ describe("CoachDashboardService", () => {
         expectedReturn: "2026-10-20",
         updatedAt: new Date("2026-10-05T10:00:00.000Z"),
       });
+    });
+
+    it("profil WT : exposé au coach ; demande en attente = raison WT_LINK_PENDING, lien confirmé = aucune raison", async () => {
+      const wt = (status: string) => ({ status, external_athlete: { id: "ext-1", display_name: "Kais DILMI", country_code: "FRA" } });
+      coachRepository.findAthletesForCoach.mockResolvedValue([
+        athleteLink("a-1", "Kais", "Ali", { wt_link: wt("pending") }),
+        athleteLink("a-2", "Lina", "B", { wt_link: wt("confirmed") }),
+      ]);
+
+      const dashboard = await service.getDashboard(COACH_ID);
+      const summaries = await service.getAthleteSummaries(COACH_ID);
+
+      const reasonsOf = (id: string) => dashboard.athletesNeedingAttention.find((a) => a.athlete.id === id)?.reasons ?? [];
+      expect(reasonsOf("a-1")).toContainEqual({ type: "WT_LINK_PENDING" });
+      expect(reasonsOf("a-2")).not.toContainEqual({ type: "WT_LINK_PENDING" });
+      expect(summaries.find((a) => a.id === "a-1")?.wtProfile).toEqual({
+        status: "pending", externalAthleteId: "ext-1", displayName: "Kais DILMI", countryCode: "FRA",
+      });
+      expect(summaries.find((a) => a.id === "a-2")?.wtProfile?.status).toBe("confirmed");
     });
 
     it("weeklyChange calculé en mémoire, cohérent avec l'algorithme WeightsService (référence >= 7 jours)", async () => {

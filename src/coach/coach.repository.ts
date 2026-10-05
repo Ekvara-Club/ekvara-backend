@@ -80,6 +80,9 @@ export class CoachRepository {
             etat_forme_note: true,
             etat_forme_retour: true,
             etat_forme_updated_at: true,
+            wt_link: {
+              select: { status: true, external_athlete: { select: { id: true, display_name: true, country_code: true } } },
+            },
             app_user: { select: SAFE_USER_SELECT },
           },
         },

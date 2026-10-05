@@ -13,6 +13,7 @@ import { CoachModule } from "./coach/coach.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { InternationalModule } from "./international/international.module";
 import { HealthModule } from "./health/health.module";
+import { WtLinksModule } from "./wt-links/wt-links.module";
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { HealthModule } from "./health/health.module";
     CoachModule,
     InternationalModule,
     HealthModule,
+    WtLinksModule,
   ],
 })
 export class AppModule {}
