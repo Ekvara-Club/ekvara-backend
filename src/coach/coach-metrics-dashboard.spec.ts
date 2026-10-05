@@ -88,8 +88,10 @@ describe("Dashboard coach — réaction aux mesures (intégration Postgres)", ()
     const beforeGlobal = await dashboardService.getDashboard(coachId);
     expect(beforeGlobal.summary.athletesWithoutRecentMetrics).toBe(1);
 
-    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 420 });
-    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 380 });
+    // Dates explicites : deux mesures créées dans la même milliseconde
+    // (mesure_le = now()) avaient un ordre indéterminé (test instable).
+    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 420, measuredAt: "2026-09-01T10:00:00.000Z" });
+    await metricsService.createMeasurement(athleteA, reactionTypeId, { value: 380, measuredAt: "2026-09-08T10:00:00.000Z" });
 
     const after = await dashboardService.getAthleteDashboard(coachId, athleteA);
     expect(after.progression.improvedCount).toBe(1);

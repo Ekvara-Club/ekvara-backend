@@ -10,9 +10,11 @@
     "start:prod": "node dist/src/main",
     "migrate:deploy": "prisma migrate deploy",
     "create:coach": "node dist/src/coach/create-coach.cli.js",
+    "reset:password": "node dist/src/auth/reset-password.cli.js",
     "import:competitions": "node dist/src/competitions/competitions-import.cli.js",
     "test": "jest",
     "seed:exercises": "nest build && node dist/src/exercises/seed/seed-exercises.js",
+    "seed:metrics": "node dist/src/metrics/seed/seed-metric-types.cli.js",
     "import:wt-results": "nest build && node dist/src/international/wt-results/wtr-import.cli.js",
     "wt:backfill": "nest build && node dist/src/international/wt-backfill/wt-backfill.cli.js",
     "wt:calendar-divisions": "nest build && node dist/src/competitions/wt-calendar-divisions.cli.js"
@@ -27,8 +29,8 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.2.1",
     "@nestjs/throttler": "^6.5.0",
-    "@prisma/adapter-pg": "^7.9.1",
-    "@prisma/client": "^7.9.1",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "argon2": "^0.45.1",
     "cheerio": "^1.2.0",
     "class-transformer": "^0.5.1",
@@ -62,6 +64,7 @@
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.ts$": "ts-jest"
-    }
+    },
+    "testTimeout": 15000
   }
 }

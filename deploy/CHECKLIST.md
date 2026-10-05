@@ -4,7 +4,7 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 
 ## A. Code (vérifié automatiquement)
 
-- ✅ Backend : 1 477 tests (tests unitaires, HTTP, intégration PostgreSQL), build OK
+- ✅ Backend : 1 481 tests (tests unitaires, HTTP, intégration PostgreSQL), build OK
   - ⚠️ `coach-metrics-dashboard.spec` échoue parfois en suite complète (DB partagée), passe seul
 - ✅ App athlète : 211 tests, build OK, chaque page chargée à la demande
 - ✅ App coach : 100 tests, build OK
@@ -13,6 +13,10 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 - ✅ Imports de compétitions fermés sur Internet (CLI à la place)
 - ✅ Création du premier coach : `npm run create:coach`
 - ✅ `/health` pour vérifier API + base
+- ✅ Première installation simulée sur une base vide : 20 migrations, `seed:metrics` (6 capacités + barème), `seed:exercises`, API en production, `/health` OK
+- ✅ `npm run reset:password` (mot de passe oublié, en attendant l'e-mail)
+- ✅ Indexation par les moteurs de recherche bloquée (robots.txt + noindex)
+- ⚠️ `npm audit` : 4 failles restantes dans l'outil `prisma` (pilote MySQL inutilisé, config) — seule correction = rétrograder en Prisma 6, refusé
 - ⬜ Pousser le backend sur GitLab (`develop`)
 - ⬜ Créer un dépôt GitLab pour l'app coach (aucun remote aujourd'hui) — non bloquant pour le Pi
 
@@ -61,4 +65,7 @@ Sécurité :
 
 - ℹ️ Barème de l'étoile : réglé par les coachs de chaque club (fiche athlète > Progression > « Barème ») ; défaut tant qu'un club ne l'a pas réglé : points 0→100, force 40→140 kg, souplesse 0→50 cm, temps de réaction 600→250 ms
 
+- ⚠️ RGPD : données de santé (état de forme, poids) et athlètes probablement mineurs — politique de confidentialité, mentions légales, consentement, suppression des données
+- ⚠️ Pas d'e-mail ni de changement de mot de passe dans l'app (réinitialisation par l'admin en V1)
+- ⚠️ App coach sans dépôt distant (code uniquement sur le Mac)
 - ⚠️ Contraste du gris secondaire `ekvara-muted` (2,41:1, sous le minimum WCAG) — non bloquant

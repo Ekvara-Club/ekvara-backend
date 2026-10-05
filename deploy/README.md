@@ -132,6 +132,7 @@ et copie les fichiers sur le Pi. Rien n'est publié si un test échoue.
 Sur le Pi, dans `~/ekvara/backend` :
 
 ```bash
+npm run seed:metrics          # capacités (endurance, force…) : indispensable
 npm run seed:exercises
 npm run import:competitions -- fftda
 npm run import:competitions -- world-taekwondo --year=2026
@@ -142,6 +143,16 @@ npm run create:coach -- --email=coach@club.fr --prenom=Prénom --nom=Nom --club=
 
 Le mot de passe du coach est demandé au clavier. Les athlètes s'inscrivent
 ensuite avec un code d'invitation créé par ce coach.
+
+### Mot de passe oublié
+
+Pas d'envoi d'e-mail en V1 : sur demande de la personne, sur le Pi,
+
+```bash
+cd ~/ekvara/backend && npm run reset:password -- --email=personne@exemple.fr
+```
+
+Le nouveau mot de passe est saisi au clavier ; transmets-le à la personne.
 
 ## 8. Sauvegardes
 
