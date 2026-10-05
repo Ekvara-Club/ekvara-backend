@@ -219,3 +219,48 @@ export function mapAthleteCreationError(error: unknown): Error {
 function toConditionView(status: string, note: string | null, expectedReturn: string | null, updatedAt: Date | null) {
   return { status, note, expectedReturn, updatedAt };
 }
+
+// RGPD — droit d'accès / portabilité : toutes les données personnelles de
+// l'athlète, telles qu'en base (sans hash de mot de passe ni donnée d'autrui
+// au-delà des références nécessaires). Droit à l'effacement : suppression du
+// compte, en cascade (app_user -> athlete -> toutes ses données).
+export async function exportAthleteData(prisma: PrismaService, athleteId: string) {
+  const athlete = await prisma.athlete.findUnique({
+    where: { id: athleteId },
+    include: {
+      app_user: { select: { email: true, nom: true, prenom: true, langue: true, created_at: true, consent_version: true, consent_at: true } },
+      club: { select: { nom: true, ville: true, pays: true } },
+      weight_log: { orderBy: { date_mesure: "asc" } },
+      weight_target: true,
+      athlete_goal: { include: { goal_step: true } },
+      metric_measurement: { include: { metric_type: { select: { code: true, nom: true, unite: true } } } },
+      training_session: { orderBy: { date_debut: "asc" } },
+      participation: { include: { competition: { select: { nom: true, date_debut: true, ville: true, pays: true } } } },
+      training_attendance: true,
+      wt_link: { include: { external_athlete: { select: { display_name: true, country_code: true } } } },
+    },
+  });
+  if (!athlete) throw new NotFoundException(`Athlete ${athleteId} introuvable`);
+  const notifications = await prisma.notification.findMany({
+    where: { recipient_user_id: athlete.user_id },
+    select: { type: true, title: true, message: true, created_at: true, is_read: true },
+    orderBy: { created_at: "asc" },
+  });
+  return { exportedAt: new Date(), athlete, notifications };
+}
+
+export async function deleteAthleteAccount(prisma: PrismaService, athleteId: string) {
+  const athlete = await prisma.athlete.findUnique({
+    where: { id: athleteId },
+    select: { user_id: true, app_user: { select: { coach_profile: { select: { id: true } } } } },
+  });
+  if (!athlete) throw new NotFoundException(`Athlete ${athleteId} introuvable`);
+  // Compte hybride (aussi coach) : supprimer l'utilisateur effacerait aussi
+  // son espace coach (groupes, séances de ses athlètes) — demande à traiter
+  // manuellement, jamais par ce bouton.
+  if (athlete.app_user.coach_profile) {
+    throw new ConflictException("Ce compte est aussi un compte coach : contacte l'éditeur pour le supprimer.");
+  }
+  await prisma.app_user.delete({ where: { id: athlete.user_id } });
+}
+

@@ -46,7 +46,7 @@ describe("AuthService", () => {
     // création coach_athlete/groupe reçoivent bien LE MÊME client que
     // createWithinTransaction (voir ticket §"TRANSACTION REGISTER" — tout
     // doit appartenir à une seule transaction Prisma, jamais plusieurs).
-    let tx: { coach_athlete: { create: jest.Mock }; coach_group_athlete: { create: jest.Mock } };
+    let tx: { coach_athlete: { create: jest.Mock }; coach_group_athlete: { create: jest.Mock }; app_user: { update: jest.Mock } };
 
     const REGISTER_DTO = {
       invitationCode: "EKV-ABCD2345",
@@ -54,10 +54,13 @@ describe("AuthService", () => {
       password: "motdepasse123",
       nom: "Dupont",
       prenom: "Jean",
+    acceptPrivacyPolicy: true,
+    acceptHealthData: true,
+    confirmAgeOrParentalConsent: true,
     };
 
     beforeEach(() => {
-      tx = { coach_athlete: { create: jest.fn() }, coach_group_athlete: { create: jest.fn() } };
+      tx = { coach_athlete: { create: jest.fn() }, coach_group_athlete: { create: jest.fn() }, app_user: { update: jest.fn() } };
       prisma.$transaction = jest.fn((callback: (tx: unknown) => unknown) => callback(tx));
     });
 
@@ -98,6 +101,18 @@ describe("AuthService", () => {
       await service.register(REGISTER_DTO);
 
       expect(invitationsService.redeem).toHaveBeenCalledWith(tx, "EKV-ABCD2345");
+    });
+
+    it("RGPD : enregistre le consentement (version de la politique + date) dans la même transaction", async () => {
+      invitationsService.redeem.mockResolvedValue({ club_id: CLUB_ID, created_by_coach_id: INVITER_COACH_ID, assigned_group_id: null });
+      athletesService.createWithinTransaction.mockResolvedValue({ id: ATHLETE_ID, user_id: APP_USER_ID, app_user: { id: APP_USER_ID } });
+
+      await service.register(REGISTER_DTO);
+
+      expect(tx.app_user.update).toHaveBeenCalledWith({
+        where: { id: APP_USER_ID },
+        data: { consent_version: "2026-10-06", consent_at: expect.any(Date) },
+      });
     });
 
     it("rattache automatiquement l'athlète créé au coach créateur de l'invitation (coach_athlete)", async () => {

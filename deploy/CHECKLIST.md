@@ -64,12 +64,14 @@ Sécurité :
 - ⬜ `POST https://api.DOMAINE/competitions/import/fftda` → 404
 - ⬜ Un athlète ne peut pas ouvrir l'app coach (refus propre)
 - ⬜ Cookies : `Secure`, `HttpOnly` (outils développeur du navigateur)
+- ⬜ RGPD : inscription refusée sans les 3 cases ; « Télécharger mes données » ; « Supprimer mon compte » sur un compte de test
 
 ## D. Décisions en attente
 
 - ℹ️ Barème de l'étoile : réglé par les coachs de chaque club (fiche athlète > Progression > « Barème ») ; défaut tant qu'un club ne l'a pas réglé : points 0→100, force 40→140 kg, souplesse 0→50 cm, temps de réaction 600→250 ms
 
-- ⚠️ RGPD : données de santé (état de forme, poids) et athlètes probablement mineurs — politique de confidentialité, mentions légales, consentement, suppression des données
+- ✅ RGPD (technique) : pages /confidentialite et /mentions-legales, 3 accords obligatoires à l'inscription (politique, données de santé, 15 ans ou accord parental) enregistrés datés et versionnés, export JSON et suppression du compte dans le Passeport
+- ⚠️ RGPD (juridique) : textes à faire relire (juriste / fédération) ; comptes créés AVANT ce changement sans consentement enregistré (à faire accepter, ou base de prod neuve)
 - ⚠️ Pas d'e-mail ni de changement de mot de passe dans l'app (réinitialisation par l'admin en V1)
 - ⚠️ App coach sans dépôt distant (code uniquement sur le Mac)
 - ⚠️ Contraste du gris secondaire `ekvara-muted` (2,41:1, sous le minimum WCAG) — non bloquant

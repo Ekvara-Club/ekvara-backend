@@ -37,6 +37,9 @@ describe("AuthController (HTTP)", () => {
     password: "motdepasse123",
     nom: "Dupont",
     prenom: "Jean",
+    acceptPrivacyPolicy: true,
+    acceptHealthData: true,
+    confirmAgeOrParentalConsent: true,
   };
 
   beforeEach(async () => {
@@ -329,4 +332,15 @@ describe("AuthController (HTTP)", () => {
       await request(app.getHttpServer()).get("/auth/me").expect(401);
     });
   });
+
+  it.each(["acceptPrivacyPolicy", "acceptHealthData", "confirmAgeOrParentalConsent"])(
+    "RGPD : inscription sans %s (ou à false) -> 400, aucun compte créé",
+    async (field) => {
+      const body = { ...VALID_BODY, [field]: false };
+      await request(app.getHttpServer()).post("/auth/register").send(body).expect(400);
+      const { [field]: _omitted, ...withoutField } = VALID_BODY as Record<string, unknown>;
+      await request(app.getHttpServer()).post("/auth/register").send(withoutField).expect(400);
+      expect(service.register).not.toHaveBeenCalled();
+    },
+  );
 });

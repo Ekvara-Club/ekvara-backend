@@ -7,6 +7,7 @@ import { InvitationsService } from "../invitations/invitations.service";
 import { RegisterDto } from "./dto/register.dto";
 import { LoginDto } from "./dto/login.dto";
 import { JwtPayload } from "./jwt-payload.interface";
+import { PRIVACY_POLICY_VERSION } from "../privacy/privacy-policy";
 
 const INVALID_CREDENTIALS_MESSAGE = "Email ou mot de passe incorrect";
 
@@ -40,6 +41,12 @@ export class AuthService {
           { email, nom: dto.nom, prenom: dto.prenom, clubId: invitation.club_id },
           passwordHash,
         );
+
+        // RGPD : consentement daté et versionné, dans la même transaction.
+        await tx.app_user.update({
+          where: { id: created.user_id },
+          data: { consent_version: PRIVACY_POLICY_VERSION, consent_at: new Date() },
+        });
 
         // Le coach créateur de l'invitation suit automatiquement le nouvel
         // athlète (voir ticket §"RELATION COACH_ATHLETE") : le club représente

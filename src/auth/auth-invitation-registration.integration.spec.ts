@@ -82,7 +82,7 @@ describe("Register via invitation de club (intégration Postgres)", () => {
   }
 
   function registerDto(invitationCode: string, email: string) {
-    return { invitationCode, email, password: "motdepasse123", nom: "Athlete", prenom: `Fixture${counter}` };
+    return { invitationCode, email, password: "motdepasse123", nom: "Athlete", prenom: `Fixture${counter}`, acceptPrivacyPolicy: true, acceptHealthData: true, confirmAgeOrParentalConsent: true };
   }
 
   describe("cycle de vie de l'invitation", () => {

@@ -14,6 +14,11 @@ model app_user {
   nom                String?              @db.VarChar(100)
   prenom             String?              @db.VarChar(100)
   langue             String?              @default("fr") @db.VarChar(10)
+  // RGPD : version de la politique de confidentialité acceptée et date du
+  // consentement (politique + données de santé + âge/accord parental),
+  // recueillis à l'inscription. NULL pour les comptes antérieurs.
+  consent_version    String?              @db.VarChar(20)
+  consent_at         DateTime?            @db.Timestamp(6)
   created_at         DateTime?            @default(now()) @db.Timestamp(6)
   updated_at         DateTime?            @default(now()) @db.Timestamp(6)
   athlete            athlete?

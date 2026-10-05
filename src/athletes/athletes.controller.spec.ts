@@ -6,6 +6,7 @@ import { AthletesController } from "./athletes.controller";
 import { AthletesService } from "./athletes.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AthleteOwnershipGuard } from "../auth/athlete-ownership.guard";
+import { PrismaService } from "../prisma/prisma.service";
 import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/auth-test.helper";
 
 // GET /athletes/:id est protégé (auth + ownership). POST /athletes (création
@@ -31,6 +32,7 @@ describe("AthletesController (HTTP)", () => {
       controllers: [AthletesController],
       providers: [
         { provide: AthletesService, useValue: service },
+        { provide: PrismaService, useValue: {} },
         JwtAuthGuard,
         AthleteOwnershipGuard,
       ],
@@ -126,6 +128,29 @@ describe("AthletesController (HTTP)", () => {
         .expect(200);
       expect(res.body.status).toBe("blesse");
       expect(service.updateCondition).toHaveBeenCalledWith(VALID_ATHLETE_ID, "user-1", { status: "blesse", note: "Cheville" });
+    });
+  });
+
+  describe("RGPD — DELETE /athletes/:id", () => {
+    it("compte d'un autre athlète -> 403 (même avec la confirmation)", async () => {
+      await request(app.getHttpServer())
+        .delete(`/athletes/${VALID_ATHLETE_ID}`)
+        .set("Cookie", otherAthleteAuthCookie)
+        .send({ confirm: "SUPPRIMER" })
+        .expect(403);
+    });
+
+    it("sans confirmation explicite -> 400, rien supprimé", async () => {
+      await request(app.getHttpServer()).delete(`/athletes/${VALID_ATHLETE_ID}`).set("Cookie", authCookie).send({}).expect(400);
+      await request(app.getHttpServer())
+        .delete(`/athletes/${VALID_ATHLETE_ID}`)
+        .set("Cookie", authCookie)
+        .send({ confirm: "oui" })
+        .expect(400);
+    });
+
+    it("export d'un autre athlète -> 403", async () => {
+      await request(app.getHttpServer()).get(`/athletes/${VALID_ATHLETE_ID}/export`).set("Cookie", otherAthleteAuthCookie).expect(403);
     });
   });
 });
