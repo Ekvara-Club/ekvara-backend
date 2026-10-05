@@ -5,7 +5,7 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 ## A. Code (vérifié automatiquement)
 
 - ✅ Backend : 1 481 tests (tests unitaires, HTTP, intégration PostgreSQL), build OK
-  - ⚠️ `coach-metrics-dashboard.spec` échoue parfois en suite complète (DB partagée), passe seul
+  - ⚠️ quelques tests d'intégration sur base partagée échouent rarement en suite complète (passent seuls)
 - ✅ App athlète : 211 tests, build OK, chaque page chargée à la demande
 - ✅ App coach : 100 tests, build OK
 - ✅ Migrations : toutes additives, aucune destructive
@@ -17,7 +17,9 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 - ✅ `npm run reset:password` (mot de passe oublié, en attendant l'e-mail)
 - ✅ Indexation par les moteurs de recherche bloquée (robots.txt + noindex)
 - ⚠️ `npm audit` : 4 failles restantes dans l'outil `prisma` (pilote MySQL inutilisé, config) — seule correction = rétrograder en Prisma 6, refusé
-- ⬜ Pousser le backend sur GitLab (`develop`)
+- ✅ Backend et app athlète poussés sur GitLab (`develop`)
+- ✅ Design retravaillé (audit ECC) et fusionné dans les deux apps
+- ✅ Synchro des sources tous les 3 jours (`npm run sync:sources`) : compétitions + résultats WT récents
 - ⬜ Créer un dépôt GitLab pour l'app coach (aucun remote aujourd'hui) — non bloquant pour le Pi
 
 ## B. Infrastructure (Pi)
@@ -29,6 +31,8 @@ Statut au 5 octobre 2026. ✅ = vérifié, ⬜ = à faire, ⚠️ = risque connu
 - ⬜ `https://api.DOMAINE/health` → `{"status":"ok","database":"ok"}`
 - ⬜ Sauvegarde nocturne active + première copie hors du Pi
 - ⬜ Test de restauration d'une sauvegarde (sur une base de test)
+- ⬜ Cron de synchro installé (`0 4 */3 * *`, guide §8 bis) ; première synchro lancée à la main, `~/ekvara/sync/sync.log` sans échec
+- ⬜ Données de départ : `seed:metrics`, `seed:exercises`, imports de compétitions, `create:coach` (guide §7)
 
 ## C. Parcours réels (à faire ensemble, sur la prod une fois en ligne)
 
