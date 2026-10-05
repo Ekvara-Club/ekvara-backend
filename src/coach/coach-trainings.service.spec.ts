@@ -15,6 +15,9 @@ describe("CoachTrainingsService", () => {
     replaceAssignments: jest.Mock;
     findAttendanceForTrainingSessions: jest.Mock;
     cancel: jest.Mock;
+    createSeriesWithAssignments: jest.Mock;
+    findSeriesOwnership: jest.Mock;
+    cancelUpcomingInSeries: jest.Mock;
   };
   let destinataireResolver: { resolve: jest.Mock };
 
@@ -58,6 +61,9 @@ describe("CoachTrainingsService", () => {
       // pour ce cas précis).
       findAttendanceForTrainingSessions: jest.fn().mockResolvedValue([]),
       cancel: jest.fn(),
+      createSeriesWithAssignments: jest.fn(),
+      findSeriesOwnership: jest.fn(),
+      cancelUpcomingInSeries: jest.fn(),
     };
     destinataireResolver = { resolve: jest.fn() };
 
@@ -278,6 +284,111 @@ describe("CoachTrainingsService", () => {
     it("coach sans séance -> []", async () => {
       repository.findSessionsForCoach.mockResolvedValue([]);
       expect(await service.findAllForCoach(COACH_ID)).toEqual([]);
+    });
+  });
+
+  describe("createSeries — séance récurrente", () => {
+    const SERIES = {
+      title: "Combat",
+      startDate: "2026-10-07",
+      startTime: "20:00",
+      endTime: "21:30",
+      weekdays: [3],
+      durationMonths: 1,
+      location: "Dojo",
+      groupIds: [GROUP_ID],
+    };
+
+    it("heure de fin <= heure de début -> 400, jamais de résolution ni d'écriture", async () => {
+      await expect(
+        service.createSeries(COACH_ID, ACTOR_USER_ID, { ...SERIES, endTime: "20:00" }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(destinataireResolver.resolve).not.toHaveBeenCalled();
+      expect(repository.createSeriesWithAssignments).not.toHaveBeenCalled();
+    });
+
+    it("destinataire non autorisé -> l'exception du resolver remonte, jamais d'écriture", async () => {
+      destinataireResolver.resolve.mockRejectedValue(new ForbiddenException("groupe d'un autre coach"));
+
+      await expect(service.createSeries(COACH_ID, ACTOR_USER_ID, SERIES)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(repository.createSeriesWithAssignments).not.toHaveBeenCalled();
+    });
+
+    it("une séance par occurrence (heure de Paris), destinataires résolus une seule fois, une notification rédigée pour la série", async () => {
+      destinataireResolver.resolve.mockResolvedValue({
+        athleteIds: [ATHLETE_A, ATHLETE_B],
+        groupIds: [GROUP_ID],
+        groupMembers: [{ group_id: GROUP_ID, athlete_id: ATHLETE_A }],
+      });
+      repository.createSeriesWithAssignments.mockResolvedValue([]);
+
+      const result = await service.createSeries(COACH_ID, ACTOR_USER_ID, SERIES);
+
+      expect(destinataireResolver.resolve).toHaveBeenCalledTimes(1);
+      const [coachId, seriesId, occurrences, athletes, groupIds, notify] =
+        repository.createSeriesWithAssignments.mock.calls[0];
+      expect(coachId).toBe(COACH_ID);
+      expect(seriesId).toBe(result.seriesId);
+      expect(occurrences).toHaveLength(5);
+      expect(occurrences[0]).toEqual(
+        expect.objectContaining({
+          titre: "Combat",
+          lieu: "Dojo",
+          date_debut: new Date("2026-10-07T18:00:00.000Z"),
+          date_fin: new Date("2026-10-07T19:30:00.000Z"),
+        }),
+      );
+      // Après le passage à l'heure d'hiver : toujours 20h à Paris.
+      expect(occurrences[3].date_debut).toEqual(new Date("2026-10-28T19:00:00.000Z"));
+      expect(athletes).toEqual([
+        { athleteId: ATHLETE_A, groupId: GROUP_ID },
+        { athleteId: ATHLETE_B, groupId: null },
+      ]);
+      expect(groupIds).toEqual([GROUP_ID]);
+      expect(notify).toEqual({
+        actorUserId: ACTOR_USER_ID,
+        title: "Nouvel entraînement récurrent",
+        message:
+          'Ton coach t\'a ajouté à la séance "Combat" chaque mercredi à 20h00, Dojo : 5 séances, du 7 octobre 2026 au 4 novembre 2026.',
+      });
+      expect(result).toEqual({
+        seriesId: expect.any(String),
+        occurrenceCount: 5,
+        firstStartAt: new Date("2026-10-07T18:00:00.000Z"),
+        lastStartAt: new Date("2026-11-04T19:00:00.000Z"),
+        athleteCount: 2,
+      });
+    });
+  });
+
+  describe("cancelUpcomingInSeries", () => {
+    const SERIES_ID = "series-1";
+    const NOW = new Date("2026-10-20T12:00:00.000Z");
+
+    it("série inconnue -> 403 (jamais 404), aucune annulation", async () => {
+      repository.findSeriesOwnership.mockResolvedValue(null);
+
+      await expect(service.cancelUpcomingInSeries(COACH_ID, ACTOR_USER_ID, SERIES_ID, NOW)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(repository.cancelUpcomingInSeries).not.toHaveBeenCalled();
+    });
+
+    it("série d'un autre coach -> 403, aucune annulation", async () => {
+      repository.findSeriesOwnership.mockResolvedValue({ coach_id: "autre-coach" });
+
+      await expect(service.cancelUpcomingInSeries(COACH_ID, ACTOR_USER_ID, SERIES_ID, NOW)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(repository.cancelUpcomingInSeries).not.toHaveBeenCalled();
+    });
+
+    it("propriétaire -> délègue l'annulation des séances postérieures à maintenant", async () => {
+      repository.findSeriesOwnership.mockResolvedValue({ coach_id: COACH_ID });
+      repository.cancelUpcomingInSeries.mockResolvedValue({ cancelledCount: 3 });
+
+      expect(await service.cancelUpcomingInSeries(COACH_ID, ACTOR_USER_ID, SERIES_ID, NOW)).toEqual({ cancelledCount: 3 });
+      expect(repository.cancelUpcomingInSeries).toHaveBeenCalledWith(SERIES_ID, NOW, ACTOR_USER_ID);
     });
   });
 });

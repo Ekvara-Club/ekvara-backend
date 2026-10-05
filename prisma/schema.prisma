@@ -623,6 +623,12 @@ model coach_training_session {
   niveau        String?                       @db.VarChar(50)
   description   String?
   statut        String?                       @default("prevu") @db.VarChar(30)
+  // Séance récurrente : même valeur pour toutes les occurrences générées
+  // ensemble (POST /coach/trainings/series), null pour une séance isolée.
+  // Pas de table "série" : chaque occurrence reste une séance complète et
+  // autonome (présences, modification, annulation inchangées) — series_id
+  // sert uniquement à les retrouver ensemble (annuler la suite).
+  series_id     String?                       @db.Uuid
   created_at    DateTime?                     @default(now()) @db.Timestamp(6)
   updated_at    DateTime?                     @default(now()) @db.Timestamp(6)
   coach_profile coach_profile                 @relation(fields: [coach_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -630,6 +636,7 @@ model coach_training_session {
   group_sources coach_training_group_source[]
 
   @@index([coach_id, date_debut])
+  @@index([coach_id, series_id])
 }
 
 // Lien entre une séance collective et CHAQUE training_session réellement

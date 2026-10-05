@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { CoachTrainingsRepository, TrainingFieldsSnapshot } from "./coach-trainings.repository";
 import { NotificationsRepository } from "../notifications/notifications.repository";
@@ -209,6 +210,145 @@ describe("CoachTrainingsRepository (intégration Postgres)", () => {
       expect(detail?.assignments).toHaveLength(1);
       const training = await prisma.training_session.findFirst({ where: { athlete_id: athleteA } });
       expect(training).not.toBeNull();
+    });
+  });
+
+  describe("séances récurrentes (series)", () => {
+    const SERIES_NOTIFY = (actorUserId: string) => ({
+      actorUserId,
+      title: "Nouvel entraînement récurrent",
+      message: "Ton coach t'a ajouté à la séance récurrente.",
+    });
+
+    function occurrences(...isoStarts: string[]): TrainingFieldsSnapshot[] {
+      return isoStarts.map((iso) => fields({ date_debut: new Date(iso) }));
+    }
+
+    it("crée une séance complète par occurrence (même series_id), N×A training_session, group_sources par occurrence, UNE notification par athlète", async () => {
+      const { coachId, userId: actorUserId } = await makeCoach();
+      const athleteA = await makeAthlete();
+      const athleteB = await makeAthlete();
+      const group = await prisma.coach_group.create({ data: { coach_id: coachId, name: `Série ${runId}` } });
+      const seriesId = randomUUID();
+
+      const sessionIds = await repository.createSeriesWithAssignments(
+        coachId,
+        seriesId,
+        occurrences("2026-10-07T18:00:00.000Z", "2026-10-14T18:00:00.000Z", "2026-10-21T18:00:00.000Z"),
+        [
+          { athleteId: athleteA, groupId: group.id },
+          { athleteId: athleteB, groupId: null },
+        ],
+        [group.id],
+        SERIES_NOTIFY(actorUserId),
+      );
+
+      expect(sessionIds).toHaveLength(3);
+      const sessions = await prisma.coach_training_session.findMany({
+        where: { id: { in: sessionIds } },
+        orderBy: { date_debut: "asc" },
+      });
+      expect(sessions.map((x) => x.series_id)).toEqual([seriesId, seriesId, seriesId]);
+      expect(sessions.every((x) => x.coach_id === coachId)).toBe(true);
+
+      const assignments = await prisma.coach_training_assignment.findMany({
+        where: { coach_training_session_id: { in: sessionIds } },
+        include: { training_session: true },
+      });
+      expect(assignments).toHaveLength(6);
+      // Chaque training_session porte la date de SON occurrence, jamais celle de la première.
+      for (const a of assignments) {
+        const session = sessions.find((x) => x.id === a.coach_training_session_id)!;
+        expect(a.training_session.date_debut).toEqual(session.date_debut);
+      }
+      expect(assignments.filter((a) => a.athlete_id === athleteA).every((a) => a.group_id === group.id)).toBe(true);
+
+      expect(
+        await prisma.coach_training_group_source.count({ where: { coach_training_session_id: { in: sessionIds } } }),
+      ).toBe(3);
+
+      const notifications = await prisma.notification.findMany({
+        where: { resource_id: { in: assignments.map((a) => a.training_session_id) } },
+      });
+      expect(notifications).toHaveLength(2);
+      expect(notifications.every((n) => n.type === "TRAINING_ASSIGNED" && n.title === "Nouvel entraînement récurrent")).toBe(true);
+      // Deep-link vers la séance de la PREMIÈRE occurrence de chaque athlète.
+      const firstOccurrenceTrainingIds = assignments
+        .filter((a) => a.coach_training_session_id === sessions[0].id)
+        .map((a) => a.training_session_id)
+        .sort();
+      expect(notifications.map((n) => n.resource_id).sort()).toEqual(firstOccurrenceTrainingIds);
+    });
+
+    it("annuler la suite : seules les occurrences strictement futures et non annulées, séance coach ET training_session ; une notification par athlète ; idempotent", async () => {
+      const { coachId, userId: actorUserId } = await makeCoach();
+      const athleteA = await makeAthlete();
+      const seriesId = randomUUID();
+      const [past, alreadyCancelled, next, later] = await repository.createSeriesWithAssignments(
+        coachId,
+        seriesId,
+        occurrences(
+          "2026-10-07T18:00:00.000Z",
+          "2026-10-14T18:00:00.000Z",
+          "2026-10-21T18:00:00.000Z",
+          "2026-10-28T19:00:00.000Z",
+        ),
+        [{ athleteId: athleteA, groupId: null }],
+        [],
+        SERIES_NOTIFY(actorUserId),
+      );
+      await repository.cancel(alreadyCancelled, actorUserId);
+      const notificationsBefore = await prisma.notification.count({ where: { type: "TRAINING_CANCELLED", actor_user_id: actorUserId } });
+
+      const result = await repository.cancelUpcomingInSeries(seriesId, new Date("2026-10-10T12:00:00.000Z"), actorUserId);
+
+      expect(result).toEqual({ cancelledCount: 2 });
+      const statusOf = async (id: string) => (await prisma.coach_training_session.findUnique({ where: { id } }))?.statut;
+      expect(await statusOf(past)).toBe("prevu");
+      expect(await statusOf(next)).toBe("annule");
+      expect(await statusOf(later)).toBe("annule");
+      const athleteTrainings = await prisma.coach_training_assignment.findMany({
+        where: { coach_training_session_id: { in: [past, next, later] } },
+        include: { training_session: { select: { statut: true, date_debut: true } } },
+      });
+      expect(athleteTrainings.find((a) => a.coach_training_session_id === past)?.training_session.statut).toBe("prevu");
+      expect(athleteTrainings.find((a) => a.coach_training_session_id === next)?.training_session.statut).toBe("annule");
+
+      const cancelNotifications = await prisma.notification.findMany({
+        where: { type: "TRAINING_CANCELLED", actor_user_id: actorUserId },
+        orderBy: { created_at: "desc" },
+      });
+      expect(cancelNotifications).toHaveLength(notificationsBefore + 1);
+      expect(cancelNotifications[0].title).toBe("Entraînements annulés");
+      expect(cancelNotifications[0].message).toContain("les 2 prochaines séances");
+      expect(cancelNotifications[0].resource_id).toBe(
+        athleteTrainings.find((a) => a.coach_training_session_id === next)?.training_session_id,
+      );
+
+      // Rejeu : rien à annuler, aucune nouvelle notification.
+      expect(await repository.cancelUpcomingInSeries(seriesId, new Date("2026-10-10T12:00:00.000Z"), actorUserId)).toEqual({
+        cancelledCount: 0,
+      });
+      expect(await prisma.notification.count({ where: { type: "TRAINING_CANCELLED", actor_user_id: actorUserId } })).toBe(
+        notificationsBefore + 1,
+      );
+    });
+
+    it("findSeriesOwnership : propriétaire d'une série existante, null pour une série inconnue", async () => {
+      const { coachId, userId: actorUserId } = await makeCoach();
+      const athleteA = await makeAthlete();
+      const seriesId = randomUUID();
+      await repository.createSeriesWithAssignments(
+        coachId,
+        seriesId,
+        occurrences("2026-10-07T18:00:00.000Z"),
+        [{ athleteId: athleteA, groupId: null }],
+        [],
+        SERIES_NOTIFY(actorUserId),
+      );
+
+      expect(await repository.findSeriesOwnership(seriesId)).toEqual({ coach_id: coachId });
+      expect(await repository.findSeriesOwnership(randomUUID())).toBeNull();
     });
   });
 

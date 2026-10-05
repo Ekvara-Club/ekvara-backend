@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import {
   CoachTrainingDetail,
   CoachTrainingSummary,
@@ -10,6 +11,9 @@ import { CoachDestinataireResolver, ResolvedDestinataires } from "./coach-destin
 import { CreateCoachTrainingDto } from "./dto/create-coach-training.dto";
 import { UpdateCoachTrainingDto } from "./dto/update-coach-training.dto";
 import { ReplaceCoachTrainingAssignmentsDto } from "./dto/replace-coach-training-assignments.dto";
+import { CreateCoachTrainingSeriesDto } from "./dto/create-coach-training-series.dto";
+import { buildSeriesOccurrences, formatWeekdaysFr } from "./training-series.util";
+import { formatTrainingDate } from "../notifications/notifications.util";
 
 @Injectable()
 export class CoachTrainingsService {
@@ -33,6 +37,80 @@ export class CoachTrainingsService {
       actorUserId,
     );
     return this.findOneForCoach(sessionId);
+  }
+
+  // Séance récurrente : chaque occurrence devient une séance collective
+  // ordinaire (voir CoachTrainingsRepository.createSeriesWithAssignments),
+  // reliée aux autres par un series_id commun. Destinataires résolus UNE
+  // fois et figés pour toute la série (même règle de snapshot qu'une séance
+  // isolée : un athlète qui rejoint le groupe plus tard ne reçoit rien).
+  async createSeries(coachId: string, actorUserId: string, dto: CreateCoachTrainingSeriesDto) {
+    if (dto.endTime !== undefined && dto.endTime <= dto.startTime) {
+      throw new BadRequestException("endTime doit être strictement postérieure à startTime");
+    }
+
+    const occurrences = buildSeriesOccurrences({
+      startDate: dto.startDate,
+      startTime: dto.startTime,
+      endTime: dto.endTime,
+      weekdays: dto.weekdays,
+      durationMonths: dto.durationMonths,
+    });
+    // Toujours au moins une occurrence avec un jour coché sur ≥ 1 mois ;
+    // défensif si les règles de validation changent un jour.
+    if (occurrences.length === 0) {
+      throw new BadRequestException("Aucune séance ne tombe dans la période choisie");
+    }
+
+    const resolved = await this.destinataireResolver.resolve(coachId, dto.groupIds ?? [], dto.athleteIds ?? []);
+    const athletes = toAthletesWithGroupLabel(resolved);
+
+    const content = {
+      titre: dto.title,
+      type_seance: dto.type,
+      sous_type: dto.subType,
+      lieu: dto.location,
+      niveau: dto.level,
+      description: dto.description,
+    };
+    const fieldsList: TrainingFieldsSnapshot[] = occurrences.map((o) => ({
+      ...content,
+      date_debut: o.startAt,
+      date_fin: o.endAt,
+    }));
+
+    const first = occurrences[0].startAt;
+    const last = occurrences[occurrences.length - 1].startAt;
+    const location = dto.location ? `, ${dto.location}` : "";
+    const seriesId = randomUUID();
+
+    await this.repository.createSeriesWithAssignments(coachId, seriesId, fieldsList, athletes, resolved.groupIds, {
+      actorUserId,
+      title: "Nouvel entraînement récurrent",
+      message:
+        `Ton coach t'a ajouté à la séance "${dto.title}" chaque ${formatWeekdaysFr(dto.weekdays)} à ` +
+        `${dto.startTime.replace(":", "h")}${location} : ${occurrences.length} séances, ` +
+        `du ${formatTrainingDate(first)} au ${formatTrainingDate(last)}.`,
+    });
+
+    return {
+      seriesId,
+      occurrenceCount: occurrences.length,
+      firstStartAt: first,
+      lastStartAt: last,
+      athleteCount: athletes.length,
+    };
+  }
+
+  // Série inconnue ou appartenant à un autre coach -> 403 (jamais 404), même
+  // politique que CoachTrainingOwnershipGuard : ne jamais confirmer
+  // l'existence d'une série à un coach qui n'en est pas propriétaire.
+  async cancelUpcomingInSeries(coachId: string, actorUserId: string, seriesId: string, now: Date = new Date()) {
+    const owner = await this.repository.findSeriesOwnership(seriesId);
+    if (!owner || owner.coach_id !== coachId) {
+      throw new ForbiddenException("Accès interdit à cette série");
+    }
+    return this.repository.cancelUpcomingInSeries(seriesId, now, actorUserId);
   }
 
   async findAllForCoach(coachId: string, range?: { from: Date; to: Date }) {
@@ -263,6 +341,7 @@ function toSummaryView(session: CoachTrainingSummary) {
     level: session.niveau,
     description: session.description,
     status: session.statut,
+    seriesId: session.series_id,
     athleteCount: session._count.assignments,
   };
 }
@@ -286,6 +365,7 @@ function toDetailView(session: CoachTrainingDetail) {
     level: session.niveau,
     description: session.description,
     status: session.statut,
+    seriesId: session.series_id,
     assignments: {
       athleteCount: athletes.length,
       athletes,

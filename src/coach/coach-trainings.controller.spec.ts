@@ -19,6 +19,8 @@ describe("CoachTrainingsController (HTTP)", () => {
     updateContent: jest.Mock;
     replaceAssignments: jest.Mock;
     cancel: jest.Mock;
+    createSeries: jest.Mock;
+    cancelUpcomingInSeries: jest.Mock;
   };
   let prisma: { coach_training_session: { findUnique: jest.Mock } };
 
@@ -38,6 +40,8 @@ describe("CoachTrainingsController (HTTP)", () => {
       updateContent: jest.fn(),
       replaceAssignments: jest.fn(),
       cancel: jest.fn(),
+      createSeries: jest.fn(),
+      cancelUpcomingInSeries: jest.fn(),
     };
     prisma = { coach_training_session: { findUnique: jest.fn() } };
 
@@ -119,6 +123,79 @@ describe("CoachTrainingsController (HTTP)", () => {
 
       expect(res.body.id).toBe(TRAINING_ID);
       expect(service.createTraining).toHaveBeenCalledWith(COACH_ID, "u-coach", expect.objectContaining({ title: "Combat" }));
+    });
+  });
+
+  describe("POST /coach/trainings/series", () => {
+    const VALID = {
+      title: "Combat",
+      startDate: "2026-10-07",
+      startTime: "20:00",
+      endTime: "21:30",
+      weekdays: [3],
+      durationMonths: 3,
+      athleteIds: [ATHLETE_ID],
+    };
+
+    it("athlete-only -> 403", async () => {
+      await request(app.getHttpServer()).post("/coach/trainings/series").set("Cookie", athleteOnlyCookie).send(VALID).expect(403);
+      expect(service.createSeries).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["durée hors 1/3/6/12 mois", { durationMonths: 2 }],
+      ["aucun jour", { weekdays: [] }],
+      ["jour hors 1..7", { weekdays: [8] }],
+      ["jour en double", { weekdays: [3, 3] }],
+      ["date de départ non YYYY-MM-DD", { startDate: "07/10/2026" }],
+      ["heure non HH:mm", { startTime: "20h" }],
+    ])("%s -> 400", async (_label, override) => {
+      await request(app.getHttpServer())
+        .post("/coach/trainings/series")
+        .set("Cookie", coachCookie)
+        .send({ ...VALID, ...override })
+        .expect(400);
+      expect(service.createSeries).not.toHaveBeenCalled();
+    });
+
+    it("coach valide -> 201, coach issu du JWT", async () => {
+      service.createSeries.mockResolvedValue({ seriesId: "s-1", occurrenceCount: 13 });
+
+      const res = await request(app.getHttpServer()).post("/coach/trainings/series").set("Cookie", coachCookie).send(VALID).expect(201);
+
+      expect(res.body).toEqual({ seriesId: "s-1", occurrenceCount: 13 });
+      expect(service.createSeries).toHaveBeenCalledWith(COACH_ID, "u-coach", expect.objectContaining({ weekdays: [3], durationMonths: 3 }));
+    });
+  });
+
+  describe("DELETE /coach/trainings/series/:seriesId/upcoming", () => {
+    const SERIES_ID = "5e5e5e5e-0000-4000-8000-000000000001";
+
+    it("athlete-only -> 403", async () => {
+      await request(app.getHttpServer())
+        .delete(`/coach/trainings/series/${SERIES_ID}/upcoming`)
+        .set("Cookie", athleteOnlyCookie)
+        .expect(403);
+      expect(service.cancelUpcomingInSeries).not.toHaveBeenCalled();
+    });
+
+    it("seriesId non UUID -> 400", async () => {
+      await request(app.getHttpServer())
+        .delete("/coach/trainings/series/pas-un-uuid/upcoming")
+        .set("Cookie", coachCookie)
+        .expect(400);
+    });
+
+    it("coach -> 200 avec le nombre de séances annulées", async () => {
+      service.cancelUpcomingInSeries.mockResolvedValue({ cancelledCount: 4 });
+
+      const res = await request(app.getHttpServer())
+        .delete(`/coach/trainings/series/${SERIES_ID}/upcoming`)
+        .set("Cookie", coachCookie)
+        .expect(200);
+
+      expect(res.body).toEqual({ cancelledCount: 4 });
+      expect(service.cancelUpcomingInSeries).toHaveBeenCalledWith(COACH_ID, "u-coach", SERIES_ID);
     });
   });
 

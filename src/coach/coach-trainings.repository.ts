@@ -34,6 +34,7 @@ const SESSION_LIST_SELECT = {
   niveau: true,
   description: true,
   statut: true,
+  series_id: true,
   _count: { select: { assignments: true } },
 } satisfies Prisma.coach_training_sessionSelect;
 
@@ -48,6 +49,7 @@ const SESSION_DETAIL_SELECT = {
   niveau: true,
   description: true,
   statut: true,
+  series_id: true,
   assignments: {
     select: {
       training_session_id: true,
@@ -61,6 +63,14 @@ const SESSION_DETAIL_SELECT = {
 
 export type CoachTrainingSummary = Prisma.coach_training_sessionGetPayload<{ select: typeof SESSION_LIST_SELECT }>;
 export type CoachTrainingDetail = Prisma.coach_training_sessionGetPayload<{ select: typeof SESSION_DETAIL_SELECT }>;
+
+// Texte de la notification unique d'une série, déjà rédigé côté service
+// (CoachTrainingsService.createSeries) — le repository ne fait que l'insérer.
+export interface SeriesNotificationContent {
+  actorUserId: string;
+  title: string;
+  message: string;
+}
 
 // Contenu déjà décidé côté service (CoachTrainingsService), jamais recalculé
 // ici : notify === null signifie "pas de changement significatif détecté"
@@ -199,6 +209,173 @@ export class CoachTrainingsRepository {
       }
 
       return session.id;
+    });
+  }
+
+  // Série récurrente : N séances collectives (une par occurrence, même
+  // series_id) créées dans UNE transaction, chacune avec exactement la même
+  // structure qu'une séance isolée (training_session + assignment par
+  // athlète, group_sources) — le planning, les présences, la modification et
+  // l'annulation séance par séance fonctionnent donc sans aucun cas
+  // particulier. Nombre de requêtes constant quel que soit le nombre
+  // d'occurrences ou d'athlètes (4 createMany + notifications).
+  //
+  // Notification : UNE par athlète pour toute la série (décision ticket,
+  // jamais une par occurrence), resource_id = son training_session de la
+  // PREMIÈRE occurrence (deep-link vers la séance la plus proche).
+  async createSeriesWithAssignments(
+    coachId: string,
+    seriesId: string,
+    occurrences: TrainingFieldsSnapshot[],
+    athletes: { athleteId: string; groupId: string | null }[],
+    groupIds: string[],
+    notify: SeriesNotificationContent,
+  ): Promise<string[]> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const sessionRows = occurrences.map((fields) => ({
+          id: randomUUID(),
+          coach_id: coachId,
+          series_id: seriesId,
+          ...fields,
+        }));
+        await tx.coach_training_session.createMany({ data: sessionRows });
+
+        const trainingSessionRows = sessionRows.flatMap((session, occurrenceIndex) =>
+          athletes.map((a) => ({
+            id: randomUUID(),
+            athlete_id: a.athleteId,
+            group_id: a.groupId,
+            coach_training_session_id: session.id,
+            occurrenceIndex,
+            fields: occurrences[occurrenceIndex],
+          })),
+        );
+
+        if (trainingSessionRows.length > 0) {
+          await tx.training_session.createMany({
+            data: trainingSessionRows.map((row) => ({ id: row.id, athlete_id: row.athlete_id, ...row.fields })),
+          });
+          await tx.coach_training_assignment.createMany({
+            data: trainingSessionRows.map((row) => ({
+              coach_training_session_id: row.coach_training_session_id,
+              training_session_id: row.id,
+              athlete_id: row.athlete_id,
+              group_id: row.group_id,
+            })),
+          });
+
+          const firstOccurrenceRows = trainingSessionRows
+            .filter((row) => row.occurrenceIndex === 0)
+            .map((row) => ({ training_session_id: row.id, athlete_id: row.athlete_id }));
+          const userIdByAthleteId = await this.resolveUserIds(
+            tx,
+            firstOccurrenceRows.map((r) => r.athlete_id),
+          );
+          await this.notifications.createMany(
+            tx,
+            this.buildRows(firstOccurrenceRows, userIdByAthleteId, { ...notify, type: TRAINING_ASSIGNED }),
+          );
+        }
+
+        if (groupIds.length > 0) {
+          await tx.coach_training_group_source.createMany({
+            data: sessionRows.flatMap((session) =>
+              groupIds.map((groupId) => ({ coach_training_session_id: session.id, group_id: groupId })),
+            ),
+          });
+        }
+
+        return sessionRows.map((row) => row.id);
+      },
+      // Jusqu'à ~365 occurrences (7 jours sur 1 an) × N athlètes : plus de
+      // lignes qu'une séance isolée, même nombre de requêtes — marge au-delà
+      // des 5 s par défaut d'une transaction interactive Prisma.
+      { timeout: 20_000 },
+    );
+  }
+
+  // Propriétaire d'une série : n'importe quelle occurrence suffit (toutes
+  // partagent le même coach_id, posé à la création). null = série inconnue.
+  findSeriesOwnership(seriesId: string) {
+    return this.prisma.coach_training_session.findFirst({
+      where: { series_id: seriesId },
+      select: { coach_id: true },
+    });
+  }
+
+  // "Annuler la suite" : toutes les occurrences de la série qui commencent
+  // STRICTEMENT après `now` et ne sont pas déjà annulées — jamais une séance
+  // passée ou en cours (historique et présences intacts). Même écriture que
+  // cancel() (CANCELLED_TRAINING_STATUS sur la séance coach ET ses
+  // training_session), mais UNE notification par athlète pour l'ensemble,
+  // resource_id = sa première séance annulée. Rejouer l'appel ne trouve plus
+  // rien à annuler : 0 annulation, aucune notification (idempotent).
+  async cancelUpcomingInSeries(
+    seriesId: string,
+    now: Date,
+    actorUserId: string,
+  ): Promise<{ cancelledCount: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const upcoming = await tx.coach_training_session.findMany({
+        where: {
+          series_id: seriesId,
+          date_debut: { gt: now },
+          OR: [{ statut: null }, { statut: { not: CANCELLED_TRAINING_STATUS } }],
+        },
+        select: { id: true, titre: true, date_debut: true },
+        orderBy: { date_debut: "asc" },
+      });
+      if (upcoming.length === 0) {
+        return { cancelledCount: 0 };
+      }
+
+      const sessionIds = upcoming.map((s) => s.id);
+      await tx.coach_training_session.updateMany({
+        where: { id: { in: sessionIds } },
+        data: { statut: CANCELLED_TRAINING_STATUS },
+      });
+
+      const assignments = await tx.coach_training_assignment.findMany({
+        where: { coach_training_session_id: { in: sessionIds } },
+        select: { training_session_id: true, athlete_id: true, coach_training_session_id: true },
+      });
+      if (assignments.length > 0) {
+        await tx.training_session.updateMany({
+          where: { id: { in: assignments.map((a) => a.training_session_id) } },
+          data: { statut: CANCELLED_TRAINING_STATUS },
+        });
+
+        // Première séance annulée de chaque athlète (upcoming est trié).
+        const orderBySession = new Map(sessionIds.map((id, index) => [id, index]));
+        const firstByAthlete = new Map<string, { training_session_id: string; athlete_id: string; order: number }>();
+        for (const a of assignments) {
+          const order = orderBySession.get(a.coach_training_session_id) ?? Number.MAX_SAFE_INTEGER;
+          const current = firstByAthlete.get(a.athlete_id);
+          if (!current || order < current.order) {
+            firstByAthlete.set(a.athlete_id, { training_session_id: a.training_session_id, athlete_id: a.athlete_id, order });
+          }
+        }
+        const recipients = [...firstByAthlete.values()];
+        const userIdByAthleteId = await this.resolveUserIds(
+          tx,
+          recipients.map((r) => r.athlete_id),
+        );
+        const first = upcoming[0];
+        const count = upcoming.length;
+        const rows = this.buildRows(recipients, userIdByAthleteId, {
+          actorUserId,
+          type: TRAINING_CANCELLED,
+          title: "Entraînements annulés",
+          message:
+            count === 1
+              ? `Ton coach a annulé la séance "${first.titre}" prévue le ${formatTrainingDateTime(first.date_debut)}.`
+              : `Ton coach a annulé les ${count} prochaines séances "${first.titre}", à partir du ${formatTrainingDateTime(first.date_debut)}.`,
+        });
+        await this.notifications.createMany(tx, rows);
+      }
+
+      return { cancelledCount: upcoming.length };
     });
   }
 

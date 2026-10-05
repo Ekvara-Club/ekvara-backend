@@ -23,6 +23,7 @@ import { CoachTrainingsService } from "./coach-trainings.service";
 import { CreateCoachTrainingDto } from "./dto/create-coach-training.dto";
 import { UpdateCoachTrainingDto } from "./dto/update-coach-training.dto";
 import { ReplaceCoachTrainingAssignmentsDto } from "./dto/replace-coach-training-assignments.dto";
+import { CreateCoachTrainingSeriesDto } from "./dto/create-coach-training-series.dto";
 
 @Controller("coach/trainings")
 @UseGuards(JwtAuthGuard)
@@ -33,6 +34,24 @@ export class CoachTrainingsController {
   @UseGuards(CoachGuard)
   create(@Req() req: Request, @Body() dto: CreateCoachTrainingDto) {
     return this.trainingsService.createTraining(req.user!.coachId!, req.user!.sub, dto);
+  }
+
+  // Séance récurrente (une séance collective par occurrence, même series_id).
+  @Post("series")
+  @UseGuards(CoachGuard)
+  createSeries(@Req() req: Request, @Body() dto: CreateCoachTrainingSeriesDto) {
+    return this.trainingsService.createSeries(req.user!.coachId!, req.user!.sub, dto);
+  }
+
+  // "Annuler la suite" : annulation douce des occurrences à venir de la
+  // série (même sémantique que DELETE /:trainingId, voir cancel). La
+  // propriété de la série est vérifiée en service (403 si inconnue/autre
+  // coach) : CoachTrainingOwnershipGuard porte sur :trainingId, pas une série.
+  @Delete("series/:seriesId/upcoming")
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(CoachGuard)
+  cancelUpcomingInSeries(@Req() req: Request, @Param("seriesId", ParseUUIDPipe) seriesId: string) {
+    return this.trainingsService.cancelUpcomingInSeries(req.user!.coachId!, req.user!.sub, seriesId);
   }
 
   // Jamais ?coachId= (ticket §11) : le coach vient exclusivement du JWT.

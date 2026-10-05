@@ -65,6 +65,19 @@ const TRAINING_TIME_FORMATTER = new Intl.DateTimeFormat("fr-FR", {
   minute: "2-digit",
 });
 
+const SERIES_DATE_FORMATTER = new Intl.DateTimeFormat("fr-FR", {
+  timeZone: "Europe/Paris",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+
+// Bornes d'une série récurrente ("7 octobre 2026") : l'année compte, une
+// série peut durer jusqu'à un an.
+export function formatTrainingDate(date: Date): string {
+  return SERIES_DATE_FORMATTER.format(date);
+}
+
 export function formatTrainingDateTime(date: Date): string {
   const day = TRAINING_DATE_FORMATTER.format(date);
   const time = TRAINING_TIME_FORMATTER.format(date).replace(":", "h");
