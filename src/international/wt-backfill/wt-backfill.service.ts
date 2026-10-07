@@ -5,7 +5,8 @@ import { WorldTaekwondoResultsImporterService, WtrBlockedError } from "../wt-res
 import { WtResultsImportService } from "../wt-results/wt-results-import.service";
 import { EventProgress, NewBackfillEvent, WtBackfillRepository } from "./wt-backfill.repository";
 import { initialEventStatus, runStatusAfterEventOutcome, WtBackfillEventStatus, WtBackfillRunStatus } from "./wt-backfill-state";
-import { withRunLock } from "./wt-backfill-lock";
+import { RunLock, RunLockOptions, withRunLock } from "./wt-backfill-lock";
+import { backoffDelayMs, BackoffPolicy, DEFAULT_DB_RETRY_POLICY, describeDbError, isTransientDbError, sleep } from "./wt-backfill-db-errors";
 
 // Scope obligatoire : jamais de "tout l'historique" par défaut (ticket §Discovery).
 export type WtBackfillScope =
@@ -27,6 +28,11 @@ export interface DiscoverResult {
   runId: string;
   scope: WtBackfillScope;
   events: DiscoveredEventPreview[];
+}
+
+interface QueueState {
+  consecutiveDbFailures: number;
+  pendingRunOutcome: WtBackfillRunStatus | null;
 }
 
 const emptyProgress = (): EventProgress => ({
@@ -154,46 +160,115 @@ export class WtBackfillService {
     return { run, events, current };
   }
 
+  // Paramètres de résilience DB (surchargés uniquement par les tests).
+  resilience: { dbRetry: BackoffPolicy; sleep: (ms: number) => Promise<void>; lock: RunLockOptions } = {
+    dbRetry: DEFAULT_DB_RETRY_POLICY,
+    sleep,
+    lock: {},
+  };
+
   // --- Boucle de traitement (séquentielle, verrouillée) --------------------
+  // Résilience aux coupures PostgreSQL d'un run de plusieurs heures : une
+  // erreur de connexion TRANSITOIRE (isTransientDbError) n'est plus fatale. On
+  // attend (backoff borné), on revérifie le lock, puis on rejoue exactement le
+  // chemin de reprise après crash déjà en place : event RUNNING -> PENDING,
+  // reprise après last_completed_category (checkpoints par catégorie
+  // conservés), jamais un event COMPLETED retraité. Le pipeline WT est
+  // idempotent (athlètes et matchs uniques par [source, source_external_id],
+  // matchs existants ignorés) : rejouer la catégorie interrompue ne crée aucun
+  // doublon. Toute autre erreur garde le comportement fail-closed.
   private async processQueue(runId: string, shouldStop: () => boolean) {
-    await withRunLock(runId, async () => {
-      // Crash recovery : tout event RUNNING trouvé ici est un reliquat d'un
-      // processus précédent mort sans nettoyage (le seul processus légitime
-      // qui pourrait l'avoir laissé RUNNING tient déjà le lock ci-dessus).
-      const stale = await this.repo.findStaleRunningEvents(runId);
-      for (const event of stale) {
-        await this.repo.recoverStaleEvent(event.id, "RUNNING périmé détecté au démarrage — repris idempotemment");
-        this.logger.warn(`Event ${event.slug} : RUNNING périmé récupéré (reprise idempotente).`);
-      }
-
-      for (;;) {
-        if (shouldStop()) {
-          this.logger.log(`Run ${runId} : arrêt demandé (SIGINT/SIGTERM), aucun nouvel event ne sera démarré.`);
-          break;
-        }
-        const event = await this.repo.findNextProcessableEvent(runId);
-        if (!event) {
-          await this.repo.recomputeRunCounters(runId);
-          await this.repo.setRunStatus(runId, "RUNNING", "COMPLETED");
-          this.logger.log(`Run ${runId} : COMPLETED (queue épuisée).`);
-          break;
-        }
-
-        const outcome = await this.processEvent(event.id, event.slug, event.event_date_start, shouldStop);
-        await this.repo.recomputeRunCounters(runId);
-
-        if (outcome === "INTERRUPTED") break; // event redevenu PENDING, run reste RUNNING
-        if (outcome !== "COMPLETED") {
-          const runStatus = runStatusAfterEventOutcome(outcome);
-          if (runStatus) {
-            await this.repo.setRunStatus(runId, "RUNNING", runStatus);
-            this.logger.warn(`Run ${runId} : arrêté (${runStatus}) sur l'event ${event.slug}.`);
+    await withRunLock(
+      runId,
+      async (lock) => {
+        const state: QueueState = { consecutiveDbFailures: 0, pendingRunOutcome: null };
+        for (;;) {
+          try {
+            await lock.ensureHeld();
+            await this.processQueueAttempt(runId, shouldStop, lock, state);
+            return;
+          } catch (error) {
+            if (!isTransientDbError(error)) throw error;
+            state.consecutiveDbFailures++;
+            const policy = this.resilience.dbRetry;
+            if (state.consecutiveDbFailures > policy.maxAttempts) {
+              this.logger.error(`Run ${runId} : PostgreSQL indisponible après ${policy.maxAttempts} reprise(s), abandon (reprendre avec resume).`);
+              throw error;
+            }
+            const delay = backoffDelayMs(state.consecutiveDbFailures, policy);
+            this.logger.warn(
+              `Run ${runId} : erreur de connexion PostgreSQL (${describeDbError(error)}) — reprise ${state.consecutiveDbFailures}/${policy.maxAttempts} dans ${delay} ms.`,
+            );
+            await this.resilience.sleep(delay);
           }
-          break; // fail-closed : jamais "log and continue"
         }
-      }
-    });
+      },
+      this.resilience.lock,
+    );
     return this.repo.getRun(runId);
+  }
+
+  private async processQueueAttempt(runId: string, shouldStop: () => boolean, lock: RunLock, state: QueueState) {
+    // Un event a déjà fait basculer le run en BLOCKED/FAILED mais l'écriture
+    // du statut du run a été coupée : on la termine, on ne continue JAMAIS la
+    // queue (fail-closed).
+    if (state.pendingRunOutcome) {
+      await this.repo.ensureRunStatus(runId, "RUNNING", state.pendingRunOutcome);
+      return;
+    }
+    const run = await this.repo.getRun(runId);
+    if (!run) throw new Error(`Run ${runId} introuvable`);
+    if (run.status !== "RUNNING") {
+      // Seulement possible après une reprise (statut terminal déjà commité
+      // mais acquittement perdu) : rien à faire de plus.
+      this.logger.log(`Run ${runId} : déjà ${run.status}, arrêt.`);
+      return;
+    }
+
+    // Crash recovery : tout event RUNNING trouvé ici est un reliquat d'un
+    // processus précédent mort sans nettoyage, ou de la tentative précédente
+    // de CE processus coupée par une erreur DB (le seul processus légitime
+    // tient le lock ci-dessus).
+    const stale = await this.repo.findStaleRunningEvents(runId);
+    for (const event of stale) {
+      await this.repo.recoverStaleEvent(event.id, "RUNNING périmé détecté au démarrage — repris idempotemment");
+      this.logger.warn(`Event ${event.slug} : RUNNING périmé récupéré (reprise idempotente).`);
+    }
+
+    for (;;) {
+      if (shouldStop()) {
+        this.logger.log(`Run ${runId} : arrêt demandé (SIGINT/SIGTERM), aucun nouvel event ne sera démarré.`);
+        break;
+      }
+      await lock.ensureHeld();
+      const event = await this.repo.findNextProcessableEvent(runId);
+      if (!event) {
+        await this.repo.recomputeRunCounters(runId);
+        await this.repo.ensureRunStatus(runId, "RUNNING", "COMPLETED");
+        this.logger.log(`Run ${runId} : COMPLETED (queue épuisée).`);
+        break;
+      }
+
+      const outcome = await this.processEvent(event.id, event.slug, event.event_date_start, shouldStop, lock, () => {
+        state.consecutiveDbFailures = 0; // progrès réel : le budget de reprise repart de zéro
+      });
+
+      if (outcome === "INTERRUPTED") {
+        await this.repo.recomputeRunCounters(runId);
+        break; // event redevenu PENDING, run reste RUNNING
+      }
+      if (outcome !== "COMPLETED") {
+        const runStatus = runStatusAfterEventOutcome(outcome);
+        if (runStatus) {
+          state.pendingRunOutcome = runStatus; // mémorisé AVANT l'écriture (voir début de tentative)
+          await this.repo.recomputeRunCounters(runId);
+          await this.repo.ensureRunStatus(runId, "RUNNING", runStatus);
+          this.logger.warn(`Run ${runId} : arrêté (${runStatus}) sur l'event ${event.slug}.`);
+        }
+        break; // fail-closed : jamais "log and continue"
+      }
+      await this.repo.recomputeRunCounters(runId);
+    }
   }
 
   // Traite UN event : liste ses catégories, appelle runPilot catégorie par
@@ -205,6 +280,8 @@ export class WtBackfillService {
     slug: string,
     dateStart: Date | null,
     shouldStop: () => boolean,
+    lock: RunLock,
+    onProgress: () => void,
   ): Promise<WtBackfillEventStatus | "INTERRUPTED"> {
     await this.repo.markEventRunning(eventId);
     const startedAt = Date.now();
@@ -242,6 +319,9 @@ export class WtBackfillService {
         return "INTERRUPTED";
       }
       const categoryLabel = toProcess[i];
+      // Lock perdu pendant la catégorie précédente : réacquis ici avant toute
+      // nouvelle écriture, ou RunLockLostError (arrêt sans écrire).
+      await lock.ensureHeld();
 
       let report;
       try {
@@ -252,6 +332,10 @@ export class WtBackfillService {
           refreshExisting: false,
         });
       } catch (error) {
+        // Coupure DB au milieu de la catégorie : PAS un échec de l'event. On
+        // laisse l'event RUNNING ; la boucle de reprise le remet en PENDING et
+        // rejoue cette catégorie (idempotent) après last_completed_category.
+        if (isTransientDbError(error)) throw error;
         progress.durationMs = Date.now() - startedAt;
         await this.repo.finishEvent(eventId, "FAILED", progress, (error as Error).message);
         return "FAILED";
@@ -300,6 +384,7 @@ export class WtBackfillService {
 
       progress.categoriesProcessed.push(categoryLabel);
       if (categoryLabel) await this.repo.recordEventProgress(eventId, categoryLabel, progress);
+      onProgress();
     }
 
     progress.durationMs = Date.now() - startedAt;

@@ -60,6 +60,16 @@ export class WtBackfillRepository {
     }
   }
 
+  // Variante idempotente de setRunStatus pour la boucle de reprise après
+  // coupure DB : si l'UPDATE précédent a été commité mais que son
+  // acquittement a été perdu, le run est déjà dans l'état cible — succès.
+  async ensureRunStatus(runId: string, from: WtBackfillRunStatus, to: WtBackfillRunStatus): Promise<void> {
+    assertValidRunTransition(from, to);
+    const run = await this.prisma.wt_backfill_run.findUnique({ where: { id: runId }, select: { status: true } });
+    if (run?.status === to) return;
+    await this.setRunStatus(runId, from, to);
+  }
+
   async recomputeRunCounters(runId: string): Promise<void> {
     const [completed, blocked, failed, discovered] = await Promise.all([
       this.prisma.wt_backfill_event.count({ where: { run_id: runId, status: "COMPLETED" } }),
