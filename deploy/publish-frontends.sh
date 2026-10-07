@@ -9,7 +9,9 @@ set -euo pipefail
 : "${EKVARA_DOMAIN:?EKVARA_DOMAIN requis (ex. ekvara.fr)}"
 : "${PI:?PI requis (ex. pi@raspberrypi.local)}"
 
-DEV_DIR="${DEV_DIR:-$HOME/Dev}"
+# Dossier qui contient EkvaraBackend, EkvaraFrontend et EkvaraCoachFrontend
+# (déduit de l'emplacement du script, quel que soit le dossier courant).
+DEV_DIR="${DEV_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 API_URL="https://api.$EKVARA_DOMAIN"
 
 publish() {

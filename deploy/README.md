@@ -120,7 +120,7 @@ Activer la connexion SSH par clé vers le Pi (`ssh-copy-id pi@raspberrypi.local`
 puis :
 
 ```bash
-cd ~/Dev/EkvaraBackend
+cd ~/Dev/Ekvara/EkvaraBackend
 EKVARA_DOMAIN=ekvara.fr PI=pi@raspberrypi.local ./deploy/publish-frontends.sh
 ```
 

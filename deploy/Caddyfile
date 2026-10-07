@@ -5,6 +5,13 @@
 {
 	auto_https off
 	admin off
+	# cloudflared (localhost) transmet l'IP du vrai client dans
+	# X-Forwarded-For. Sans ceci, Caddy remplace cet en-tête par 127.0.0.1 :
+	# l'API (TRUST_PROXY=loopback) verrait alors tous les utilisateurs avec la
+	# même IP et le throttling de /auth (8/min) les bloquerait ensemble.
+	servers {
+		trusted_proxies static 127.0.0.1/32 ::1/128
+	}
 }
 
 (static_spa) {
