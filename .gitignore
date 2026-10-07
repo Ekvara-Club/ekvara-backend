@@ -3,3 +3,22 @@
 /node_modules
 /dist
 .env
+
+# Secrets : toute variante de .env (seul .env.example est versionné)
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Sauvegardes / dumps de base (deploy/backup-db.sh), logs
+*.dump
+backups/
+*.log
+
+# Divers
+coverage/
+.DS_Store
+.vscode/
+.idea/

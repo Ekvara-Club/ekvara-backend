@@ -107,14 +107,14 @@ describe("CompetitionEntriesService", () => {
     competitionsRepository.findById.mockResolvedValue({ id: COMPETITION_ID });
     entriesRepository.findByCompetition.mockResolvedValue([
       entry({ id: "e1", participant_name: "Zidane Marc" }),
-      entry({ id: "e2", participant_name: "Alaoui Sarah" }),
+      entry({ id: "e2", participant_name: "Aaron Exemple" }),
       entry({ id: "e3", participant_name: "Martin Léa" }),
     ]);
 
     const result = await service.findByCompetition(COMPETITION_ID);
 
     expect(result.categories[0].entries.map((e) => e.name)).toEqual([
-      "Alaoui Sarah",
+      "Aaron Exemple",
       "Martin Léa",
       "Zidane Marc",
     ]);
