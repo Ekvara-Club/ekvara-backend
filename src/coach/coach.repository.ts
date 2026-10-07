@@ -32,13 +32,6 @@ export class CoachRepository {
   // Utilisé par POST /coach/athletes (ajout par email) : ne renvoie jamais
   // password_hash, uniquement ce qui est nécessaire pour vérifier l'existence
   // du compte et de son profil athlète.
-  findUserByEmailWithAthlete(email: string) {
-    return this.prisma.app_user.findUnique({
-      where: { email },
-      select: { id: true, athlete: { select: { id: true } } },
-    });
-  }
-
   coachAthleteExists(coachId: string, athleteId: string): Promise<boolean> {
     return this.prisma.coach_athlete
       .findUnique({ where: { coach_id_athlete_id: { coach_id: coachId, athlete_id: athleteId } } })

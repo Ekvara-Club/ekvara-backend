@@ -17,7 +17,7 @@ import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/au
 // le service (même esprit que athletes.controller.spec.ts).
 describe("CoachController (HTTP)", () => {
   let app: INestApplication;
-  let coachService: { getMe: jest.Mock; addAthleteByEmail: jest.Mock; removeAthlete: jest.Mock; listAthletes: jest.Mock };
+  let coachService: { getMe: jest.Mock; removeAthlete: jest.Mock; listAthletes: jest.Mock };
   let athletesService: { findOne: jest.Mock };
   let prisma: { coach_athlete: { findUnique: jest.Mock } };
 
@@ -30,7 +30,6 @@ describe("CoachController (HTTP)", () => {
   beforeEach(async () => {
     coachService = {
       getMe: jest.fn(),
-      addAthleteByEmail: jest.fn(),
       removeAthlete: jest.fn(),
       listAthletes: jest.fn(),
     };
@@ -83,35 +82,15 @@ describe("CoachController (HTTP)", () => {
     });
   });
 
-  describe("POST /coach/athletes", () => {
-    it("athlete-only -> 403", async () => {
-      await request(app.getHttpServer())
-        .post("/coach/athletes")
-        .set("Cookie", athleteOnlyCookie)
-        .send({ email: "athlete@test.fr" })
-        .expect(403);
-    });
-
-    it("email invalide -> 400", async () => {
+  describe("POST /coach/athletes (supprimée)", () => {
+    // Un athlète ne rejoint un coach que via le code d'invitation à
+    // l'inscription : un coach ne peut jamais s'attribuer un athlète par email.
+    it("coach valide -> 404, la route n'existe plus", async () => {
       await request(app.getHttpServer())
         .post("/coach/athletes")
         .set("Cookie", coachCookie)
-        .send({ email: "pas-un-email" })
-        .expect(400);
-      expect(coachService.addAthleteByEmail).not.toHaveBeenCalled();
-    });
-
-    it("coach valide -> 201, délègue au service", async () => {
-      coachService.addAthleteByEmail.mockResolvedValue({ athleteId: ATHLETE_ID });
-
-      const res = await request(app.getHttpServer())
-        .post("/coach/athletes")
-        .set("Cookie", coachCookie)
         .send({ email: "athlete@test.fr" })
-        .expect(201);
-
-      expect(res.body).toEqual({ athleteId: ATHLETE_ID });
-      expect(coachService.addAthleteByEmail).toHaveBeenCalledWith(COACH_ID, { email: "athlete@test.fr" });
+        .expect(404);
     });
   });
 

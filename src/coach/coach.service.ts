@@ -1,6 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma } from "../../generated/prisma/client";
-import { AddCoachAthleteDto } from "./dto/add-coach-athlete.dto";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { CoachRepository } from "./coach.repository";
 
 @Injectable()
@@ -15,40 +13,6 @@ export class CoachService {
       throw new NotFoundException(`Profil coach ${coachId} introuvable`);
     }
     return toCoachProfileView(profile);
-  }
-
-  // Ajout d'un athlète EXISTANT par email (décision produit MVP, voir ticket
-  // §17) : ne crée jamais d'athlete/app_user, ne transfère jamais la
-  // propriété du compte, n'envoie aucun mot de passe.
-  async addAthleteByEmail(coachId: string, dto: AddCoachAthleteDto) {
-    const email = dto.email.trim().toLowerCase();
-    const user = await this.coachRepository.findUserByEmailWithAthlete(email);
-
-    if (!user) {
-      throw new NotFoundException("Aucun compte trouvé pour cet email");
-    }
-    if (!user.athlete) {
-      throw new BadRequestException("Ce compte n'a pas de profil athlète");
-    }
-
-    const alreadyLinked = await this.coachRepository.coachAthleteExists(coachId, user.athlete.id);
-    if (alreadyLinked) {
-      throw new ConflictException("Cet athlète est déjà dans votre groupe de gestion");
-    }
-
-    try {
-      await this.coachRepository.createCoachAthlete(coachId, user.athlete.id);
-    } catch (error) {
-      // Filet de sécurité contre un ajout concurrent : la contrainte unique
-      // (coach_id, athlete_id) en base reste la protection finale (même
-      // pattern que ParticipationsService.participate).
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-        throw new ConflictException("Cet athlète est déjà dans votre groupe de gestion");
-      }
-      throw error;
-    }
-
-    return { athleteId: user.athlete.id };
   }
 
   removeAthlete(coachId: string, athleteId: string): Promise<void> {

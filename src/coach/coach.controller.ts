@@ -1,5 +1,4 @@
 import {
-  Body,
   Controller,
   Delete,
   Get,
@@ -7,7 +6,6 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
-  Post,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -17,7 +15,6 @@ import { CoachGuard } from "../auth/coach.guard";
 import { CoachAthleteAccessGuard } from "../auth/coach-athlete-access.guard";
 import { AthletesService } from "../athletes/athletes.service";
 import { CoachService } from "./coach.service";
-import { AddCoachAthleteDto } from "./dto/add-coach-athlete.dto";
 
 // Toutes les routes /coach/* exigent JwtAuthGuard. Le second guard varie par
 // route : CoachGuard pour les routes sans athleteId (vérifie juste
@@ -39,11 +36,10 @@ export class CoachController {
     return this.coachService.getMe(req.user!.coachId!);
   }
 
-  @Post("athletes")
-  @UseGuards(CoachGuard)
-  addAthlete(@Req() req: Request, @Body() dto: AddCoachAthleteDto) {
-    return this.coachService.addAthleteByEmail(req.user!.coachId!, dto);
-  }
+  // Pas de POST /coach/athletes : un athlète rejoint un coach UNIQUEMENT en
+  // s'inscrivant avec le code d'invitation de ce coach (son accord explicite).
+  // L'ancien ajout par email laissait n'importe quel coach s'attribuer
+  // n'importe quel athlète, et donc ses données de santé.
 
   @Get("athletes")
   @UseGuards(CoachGuard)

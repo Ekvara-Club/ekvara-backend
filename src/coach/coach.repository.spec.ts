@@ -109,15 +109,6 @@ describe("CoachRepository (intégration Postgres)", () => {
       expect(forA).toHaveLength(1);
       expect(forA[0].athlete.id).toBe(athleteForA);
     });
-
-    it("findUserByEmailWithAthlete : email inconnu -> null ; user sans athlete -> athlete null", async () => {
-      const { userId: coachOnlyUserId } = await makeCoach();
-      const coachOnlyUser = await prisma.app_user.findUnique({ where: { id: coachOnlyUserId } });
-
-      expect(await repository.findUserByEmailWithAthlete("inconnu-vraiment@test.fr")).toBeNull();
-      const result = await repository.findUserByEmailWithAthlete(coachOnlyUser!.email);
-      expect(result?.athlete).toBeNull();
-    });
   });
 
   describe("removeCoachAthlete (transactionnel)", () => {

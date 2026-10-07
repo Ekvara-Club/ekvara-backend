@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
+import { NotFoundException } from "@nestjs/common";
 import { CoachService } from "./coach.service";
 import { CoachRepository } from "./coach.repository";
 
@@ -7,9 +7,7 @@ describe("CoachService", () => {
   let service: CoachService;
   let repository: {
     findProfileById: jest.Mock;
-    findUserByEmailWithAthlete: jest.Mock;
     coachAthleteExists: jest.Mock;
-    createCoachAthlete: jest.Mock;
     removeCoachAthlete: jest.Mock;
     findAthletesForCoach: jest.Mock;
   };
@@ -20,9 +18,7 @@ describe("CoachService", () => {
   beforeEach(async () => {
     repository = {
       findProfileById: jest.fn(),
-      findUserByEmailWithAthlete: jest.fn(),
       coachAthleteExists: jest.fn(),
-      createCoachAthlete: jest.fn(),
       removeCoachAthlete: jest.fn(),
       findAthletesForCoach: jest.fn(),
     };
@@ -66,57 +62,6 @@ describe("CoachService", () => {
     it("profil introuvable -> NotFoundException", async () => {
       repository.findProfileById.mockResolvedValue(null);
       await expect(service.getMe(COACH_ID)).rejects.toBeInstanceOf(NotFoundException);
-    });
-  });
-
-  describe("addAthleteByEmail", () => {
-    it("email inconnu -> NotFoundException", async () => {
-      repository.findUserByEmailWithAthlete.mockResolvedValue(null);
-
-      await expect(
-        service.addAthleteByEmail(COACH_ID, { email: "absent@test.fr" }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      expect(repository.createCoachAthlete).not.toHaveBeenCalled();
-    });
-
-    it("user sans profil athlète -> BadRequestException", async () => {
-      repository.findUserByEmailWithAthlete.mockResolvedValue({ id: "u-1", athlete: null });
-
-      await expect(
-        service.addAthleteByEmail(COACH_ID, { email: "coach2@test.fr" }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      expect(repository.createCoachAthlete).not.toHaveBeenCalled();
-    });
-
-    it("déjà lié -> ConflictException (409), idempotence explicite documentée", async () => {
-      repository.findUserByEmailWithAthlete.mockResolvedValue({ id: "u-1", athlete: { id: ATHLETE_ID } });
-      repository.coachAthleteExists.mockResolvedValue(true);
-
-      await expect(
-        service.addAthleteByEmail(COACH_ID, { email: "athlete@test.fr" }),
-      ).rejects.toBeInstanceOf(ConflictException);
-      expect(repository.createCoachAthlete).not.toHaveBeenCalled();
-    });
-
-    it("email normalisé (trim + lowercase) avant recherche", async () => {
-      repository.findUserByEmailWithAthlete.mockResolvedValue({ id: "u-1", athlete: { id: ATHLETE_ID } });
-      repository.coachAthleteExists.mockResolvedValue(false);
-      repository.createCoachAthlete.mockResolvedValue({ id: "link-1" });
-
-      await service.addAthleteByEmail(COACH_ID, { email: "  Athlete@Test.fr  " });
-
-      expect(repository.findUserByEmailWithAthlete).toHaveBeenCalledWith("athlete@test.fr");
-    });
-
-    it("cas nominal -> crée le lien et renvoie athleteId", async () => {
-      repository.findUserByEmailWithAthlete.mockResolvedValue({ id: "u-1", athlete: { id: ATHLETE_ID } });
-      repository.coachAthleteExists.mockResolvedValue(false);
-      repository.createCoachAthlete.mockResolvedValue({ id: "link-1" });
-
-      const result = await service.addAthleteByEmail(COACH_ID, { email: "athlete@test.fr" });
-
-      expect(result).toEqual({ athleteId: ATHLETE_ID });
-      expect(repository.createCoachAthlete).toHaveBeenCalledWith(COACH_ID, ATHLETE_ID);
     });
   });
 
