@@ -30,15 +30,22 @@ export const APP_CONTEXT_HEADER = "x-ekvara-app";
 // revanche refusée (400), jamais repliée silencieusement sur un contexte.
 export const DEFAULT_APP_CONTEXT: AppContext = "athlete";
 
-export function resolveAppContext(request: Pick<Request, "headers">): AppContext {
+export function resolveAppContext(
+  request: Pick<Request, "headers">,
+): AppContext {
   const raw = request.headers[APP_CONTEXT_HEADER];
   if (raw === undefined) {
     return DEFAULT_APP_CONTEXT;
   }
-  if (typeof raw === "string" && (APP_CONTEXTS as readonly string[]).includes(raw)) {
+  if (
+    typeof raw === "string" &&
+    (APP_CONTEXTS as readonly string[]).includes(raw)
+  ) {
     return raw as AppContext;
   }
-  throw new BadRequestException(`En-tête X-Ekvara-App invalide (attendu : ${APP_CONTEXTS.join(" | ")})`);
+  throw new BadRequestException(
+    `En-tête X-Ekvara-App invalide (attendu : ${APP_CONTEXTS.join(" | ")})`,
+  );
 }
 
 export function authCookieNameFor(context: AppContext): string {
@@ -50,7 +57,7 @@ export function authCookieNameFor(context: AppContext): string {
 function baseCookieOptions(): CookieOptions {
   return {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
   };
