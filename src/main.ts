@@ -31,12 +31,9 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // Empêche la réutilisation de réponses API entre les deux frontends.
-  app.use((req, res, next) => {
-    if (req.path === "/competitions" || req.path.startsWith("/competitions/")) {
-      res.setHeader("Cache-Control", "no-store");
-    }
-
+  // Évite la mise en cache des réponses de l'API.
+  app.use((_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
     next();
   });
 
