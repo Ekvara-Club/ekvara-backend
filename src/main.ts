@@ -31,6 +31,15 @@ async function bootstrap() {
     credentials: true,
   });
 
+  // Empêche la réutilisation de réponses API entre les deux frontends.
+  app.use((req, res, next) => {
+    if (req.path === "/competitions" || req.path.startsWith("/competitions/")) {
+      res.setHeader("Cache-Control", "no-store");
+    }
+
+    next();
+  });
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
