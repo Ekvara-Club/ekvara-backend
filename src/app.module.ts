@@ -14,6 +14,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
 import { InternationalModule } from "./international/international.module";
 import { HealthModule } from "./health/health.module";
 import { WtLinksModule } from "./wt-links/wt-links.module";
+import { AdminModule } from "./admin/admin.module";
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { WtLinksModule } from "./wt-links/wt-links.module";
     InternationalModule,
     HealthModule,
     WtLinksModule,
+    AdminModule,
   ],
 })
 export class AppModule {}
