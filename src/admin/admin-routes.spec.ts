@@ -1,8 +1,15 @@
 import { GUARDS_METADATA, METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { AdminAuthController } from "./admin-auth.controller";
 import { AdminGuard } from "./admin.guard";
-import { AdminModule } from "./admin.module";
 import { deriveAdminJwtSecret, resolveAdminUserIds } from "./admin-config";
+import { TEST_JWT_SECRET } from "../test-utils/auth-test.helper";
+
+// AdminModule importe CompetitionsModule -> AuthGuardsModule, qui exige
+// JWT_SECRET dès son chargement : secret de test fixé AVANT le require (les
+// import sont remontés en tête de fichier, d'où le require explicite).
+process.env.JWT_SECRET ??= TEST_JWT_SECRET;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { AdminModule } = require("./admin.module") as typeof import("./admin.module");
 
 // Filet structurel (ticket §13 : autorisation vérifiée sur CHAQUE endpoint
 // d'administration) : tout contrôleur enregistré dans AdminModule — y compris
