@@ -1,4 +1,5 @@
 import { Controller, Get, Injectable, UseGuards } from "@nestjs/common";
+import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminGuard } from "./admin.guard";
 import { competitionOrigin } from "./competitions/admin-competition-origin";
@@ -9,6 +10,11 @@ const RECENT_LIMIT = 5;
 // codés en dur. "Sans résultats" = aucun competition_match (combat logique)
 // rattaché ; "passées" = fin effective (date_fin ?? date_debut) avant
 // aujourd'hui, même règle que le catalogue (next-competition.ts).
+//
+// Toutes les lectures dans UNE transaction REPEATABLE READ : un seul
+// instantané cohérent. Sans elle, une compétition créée entre deux comptages
+// (synchro, saisie) pouvait afficher plus de "sans résultats" que de
+// compétitions.
 @Injectable()
 export class AdminStatsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -19,7 +25,8 @@ export class AdminStatsService {
     const pastWhere = { OR: [{ date_fin: { lt: today } }, { date_fin: null, date_debut: { lt: today } }] };
 
     const [competitions, athletes, matches, withoutResults, pastWithoutResults, recentCompetitions, recentAthletes, recentMatches] =
-      await Promise.all([
+      await this.prisma.$transaction(
+        [
         this.prisma.competition.count(),
         this.prisma.external_athlete.count(),
         this.prisma.competition_match.count(),
@@ -47,7 +54,9 @@ export class AdminStatsService {
             athlete_b: { select: { display_name: true } },
           },
         }),
-      ]);
+        ],
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      );
 
     return {
       totals: { competitions, athletes, matches, competitionsWithoutResults: withoutResults, pastCompetitionsWithoutResults: pastWithoutResults },
