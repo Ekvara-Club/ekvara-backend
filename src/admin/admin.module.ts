@@ -6,6 +6,12 @@ import { AdminAuditLogger } from "./admin-audit.logger";
 import { AdminAthletesController } from "./athletes/admin-athletes.controller";
 import { AdminAthletesRepository } from "./athletes/admin-athletes.repository";
 import { AdminAthletesService } from "./athletes/admin-athletes.service";
+import { AdminEntriesController } from "./entries/admin-entries.controller";
+import { AdminEntriesRepository } from "./entries/admin-entries.repository";
+import { AdminEntriesService } from "./entries/admin-entries.service";
+import { AdminMatchesController } from "./matches/admin-matches.controller";
+import { AdminMatchesRepository } from "./matches/admin-matches.repository";
+import { AdminMatchesService } from "./matches/admin-matches.service";
 import { AdminAuthController } from "./admin-auth.controller";
 import { AdminAuthService } from "./admin-auth.service";
 import { AdminGuard } from "./admin.guard";
@@ -28,7 +34,14 @@ const ADMIN_LOGIN_THROTTLE_LIMIT = 5;
 // @UseGuards(AdminGuard) au niveau classe (voir admin-routes.spec.ts).
 @Module({
   imports: [CompetitionsModule, ThrottlerModule.forRoot([{ ttl: ADMIN_LOGIN_THROTTLE_TTL_MS, limit: ADMIN_LOGIN_THROTTLE_LIMIT }])],
-  controllers: [AdminAuthController, AdminStatsController, AdminCompetitionsController, AdminAthletesController],
+  controllers: [
+    AdminAuthController,
+    AdminStatsController,
+    AdminCompetitionsController,
+    AdminAthletesController,
+    AdminEntriesController,
+    AdminMatchesController,
+  ],
   providers: [
     ...adminTokenProviders,
     AdminAuditLogger,
@@ -40,6 +53,10 @@ const ADMIN_LOGIN_THROTTLE_LIMIT = 5;
     InternationalRepository,
     AdminAthletesRepository,
     AdminAthletesService,
+    AdminEntriesRepository,
+    AdminEntriesService,
+    AdminMatchesRepository,
+    AdminMatchesService,
   ],
 })
 export class AdminModule {}
