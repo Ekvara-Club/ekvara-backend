@@ -132,21 +132,62 @@ describeOnTestDatabase("Compétitions EkvaraAdmin (intégration Postgres, base d
   });
 
   describe("doublons : détectés, jamais fusionnés", () => {
-    it("compétition identique -> 409 avec la candidate ; confirmation explicite -> deux compétitions distinctes", async () => {
+    it("compétition strictement identique -> 409 bloquant, même avec confirmation ; rien n'est écrit", async () => {
       const nom = `${RUN} Championnat de France Cadets`;
-      const first = await service.create({ nom, dateDebut: "2098-04-04" }, ADMIN_ID);
+      const fields = { nom, dateDebut: "2098-04-04", dateFin: "2098-04-05", ville: "Orléans", pays: "France" };
+      const first = await service.create(fields, ADMIN_ID);
 
-      const error = await service.create({ nom, dateDebut: "2098-04-04" }, ADMIN_ID).catch((e: unknown) => e);
+      const preview = await service.previewCreate({ ...fields, nom: nom.toUpperCase() });
+      expect(preview.blocking).toMatch(/existe déjà/);
+      expect(preview.candidates).toEqual([expect.objectContaining({ id: first.id, exact: true })]);
+
+      const error = await service.create({ ...fields, acknowledgedDuplicateIds: [first.id] }, ADMIN_ID).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ConflictException);
-      const body = (error as ConflictException).getResponse() as { candidates: { id: string; level: string }[] };
-      expect(body.candidates).toEqual([expect.objectContaining({ id: first.id, level: "probable" })]);
+      expect((error as ConflictException).getResponse()).toMatchObject({ blocking: true, candidates: [expect.objectContaining({ id: first.id })] });
+      expect(await countByName(nom)).toBe(1);
+    });
+
+    it("même nom et même date mais autre ville -> 409 à confirmer ; confirmation explicite -> deux compétitions distinctes", async () => {
+      const nom = `${RUN} Open International`;
+      const first = await service.create({ nom, dateDebut: "2098-12-05", ville: "Paris" }, ADMIN_ID);
+
+      const error = await service.create({ nom, dateDebut: "2098-12-05", ville: "Lyon" }, ADMIN_ID).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConflictException);
+      const body = (error as ConflictException).getResponse() as { blocking?: boolean; candidates: { id: string; level: string; exact: boolean }[] };
+      expect(body.blocking).toBeUndefined();
+      expect(body.candidates).toEqual([expect.objectContaining({ id: first.id, exact: false })]);
       expect(await countByName(nom)).toBe(1);
 
-      const second = await service.create({ nom, dateDebut: "2098-04-04", acknowledgedDuplicateIds: [first.id] }, ADMIN_ID);
+      const second = await service.create({ nom, dateDebut: "2098-12-05", ville: "Lyon", acknowledgedDuplicateIds: [first.id] }, ADMIN_ID);
       expect(second.id).not.toBe(first.id);
       expect(await countByName(nom)).toBe(2);
       const firstSources = await prisma.competition_source.findMany({ where: { competition_id: first.id } });
       expect(firstSources).toHaveLength(1);
+    });
+
+    it("compétition IMPORTÉE strictement identique -> création manuelle refusée (bloquant)", async () => {
+      const imported = await importFromFftda("exact", `${RUN} Coupe Régionale`, "2098-12-20", { ville: "Tours" });
+      const error = await service
+        .create({ nom: `${RUN} Coupe Régionale`, dateDebut: "2098-12-20", ville: "Tours", acknowledgedDuplicateIds: [imported.competition.id] }, ADMIN_ID)
+        .catch((e: unknown) => e);
+      expect((error as ConflictException).getResponse()).toMatchObject({ blocking: true });
+      expect(await countByName(`${RUN} Coupe Régionale`)).toBe(1);
+    });
+
+    it("modification rendant une compétition strictement identique à une autre -> refusée (bloquant), aucune écriture", async () => {
+      const nom = `${RUN} Interclubs`;
+      await service.create({ nom, dateDebut: "2098-10-20", ville: "Nantes" }, ADMIN_ID);
+      const other = await service.create({ nom, dateDebut: "2098-10-20", ville: "Rennes" }, ADMIN_ID).catch(async (e: ConflictException) =>
+        service.create(
+          { nom, dateDebut: "2098-10-20", ville: "Rennes", acknowledgedDuplicateIds: (e.getResponse() as { candidates: { id: string }[] }).candidates.map((c) => c.id) },
+          ADMIN_ID,
+        ),
+      );
+
+      expect((await service.previewUpdate(other.id, { ville: "Nantes" })).blocking).toMatch(/existe déjà/);
+      const error = await service.update(other.id, { ville: "Nantes" }, ADMIN_ID).catch((e: unknown) => e);
+      expect((error as ConflictException).getResponse()).toMatchObject({ blocking: true });
+      expect((await service.getDetail(other.id)).ville).toBe("Rennes");
     });
 
     it("date proche (± 7 jours) d'une compétition IMPORTÉE -> candidate possible signalée", async () => {

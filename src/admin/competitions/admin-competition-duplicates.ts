@@ -51,6 +51,9 @@ export interface DuplicateCandidate {
   sources: string[];
   level: DuplicateLevel;
   dayGap: number;
+  // Strictement identique (nom, dates de début et de fin, ville, pays) :
+  // création refusée, aucune confirmation possible.
+  exact: boolean;
   reasons: string[];
 }
 
@@ -74,6 +77,16 @@ export function detectDuplicateCompetitions(input: DuplicateInput, existing: Exi
     reasons.unshift(dayGap === 0 ? SAME_DATE_REASON : `date de début à ${Math.abs(dayGap)} jour(s) d'écart`);
 
     const level: DuplicateLevel = dayGap === 0 && (verdict.confidence === "SAFE" || sameName) ? "probable" : "possible";
+    // Identité stricte : tous les champs qui définissent la compétition
+    // coïncident (null = null). Un nom identique avec une autre ville, un
+    // autre pays ou d'autres dates reste une correspondance à confirmer.
+    const exact =
+      sameName &&
+      dayGap === 0 &&
+      sameDay(competition.date_fin, input.dateFin) &&
+      sameText(competition.ville, input.ville) &&
+      sameText(competition.pays, input.pays);
+    if (exact) reasons.push("compétition strictement identique (nom, dates, ville, pays) : création impossible");
     candidates.push({
       id: competition.id,
       nom: competition.nom,
@@ -84,6 +97,7 @@ export function detectDuplicateCompetitions(input: DuplicateInput, existing: Exi
       sources: competition.sources.map((s) => s.source),
       level,
       dayGap,
+      exact,
       reasons,
     });
   }
@@ -102,6 +116,14 @@ function normalizeName(nom: string): string {
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+function sameDay(a: Date | null, b: Date | null): boolean {
+  return a === null || b === null ? a === b : a.getTime() === b.getTime();
+}
+
+function sameText(a: string | null, b: string | null): boolean {
+  return normalizeName(a ?? "") === normalizeName(b ?? "");
 }
 
 function isoDay(date: Date): string {

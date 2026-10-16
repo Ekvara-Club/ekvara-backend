@@ -3,7 +3,7 @@ import { athleteOrigin, detectDuplicateAthletes, EDITABLE_ATHLETE_FIELDS, Existi
 const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
 
 function existing(id: string, display_name: string, extra: Partial<ExistingAthlete> = {}): ExistingAthlete {
-  return { id, display_name, country_code: null, birth_date: null, sources: [{ source: "world_taekwondo_results" }], ...extra };
+  return { id, display_name, country_code: null, gender: null, birth_date: null, sources: [{ source: "world_taekwondo_results" }], ...extra };
 }
 
 describe("nameTokens", () => {
@@ -47,6 +47,39 @@ describe("detectDuplicateAthletes (jamais de fusion, signalement seulement)", ()
       expect.objectContaining({ id: "a", level: "possible" }),
     ]);
     expect(detectDuplicateAthletes(input("Kim Minsu"), [existing("b", "KIM Jiwoo")])).toEqual([]);
+  });
+
+  describe("identité établie (A1) : seule cause de refus définitif", () => {
+    const known = existing("a", "DUBOIS Emma", { country_code: "FRA", birth_date: day("2001-04-12"), gender: "female" });
+
+    it("même nom + même pays + même date de naissance -> exact (bloquant)", () => {
+      const [candidate] = detectDuplicateAthletes(input("Emma Dubois", "FRA", day("2001-04-12")), [known]);
+      expect(candidate).toMatchObject({ level: "probable", exact: true });
+      expect(candidate.reasons.join(" ")).toContain("identité établie");
+    });
+
+    it("homonyme : même nom seul, ou même nom + même pays sans date de naissance -> confirmation, jamais bloquant", () => {
+      expect(detectDuplicateAthletes(input("Emma Dubois"), [known])[0]).toMatchObject({ level: "probable", exact: false });
+      expect(detectDuplicateAthletes(input("Emma Dubois", "FRA"), [known])[0]).toMatchObject({ level: "probable", exact: false });
+      expect(detectDuplicateAthletes(input("Emma Dubois", null, day("2001-04-12")), [known])[0]).toMatchObject({ exact: false });
+    });
+
+    it("date de naissance ou pays inconnus de l'athlète existant -> jamais bloquant", () => {
+      const partial = existing("b", "DUBOIS Emma", { country_code: "FRA" });
+      expect(detectDuplicateAthletes(input("Emma Dubois", "FRA", day("2001-04-12")), [partial])[0]).toMatchObject({ exact: false });
+    });
+
+    it("genre contradictoire, pays ou date différents -> possible, non bloquant", () => {
+      const male = { ...input("Emma Dubois", "FRA", day("2001-04-12")), gender: "male" };
+      expect(detectDuplicateAthletes(male, [known])[0]).toMatchObject({ level: "possible", exact: false });
+      expect(detectDuplicateAthletes(input("Emma Dubois", "BEL", day("2001-04-12")), [known])[0]).toMatchObject({ exact: false });
+      expect(detectDuplicateAthletes(input("Emma Dubois", "FRA", day("2001-04-13")), [known])[0]).toMatchObject({ exact: false });
+    });
+
+    it("nom seulement proche (deuxième prénom) -> jamais bloquant, même avec pays et date identiques", () => {
+      const [candidate] = detectDuplicateAthletes(input("Emma Louise Dubois", "FRA", day("2001-04-12")), [known]);
+      expect(candidate).toMatchObject({ level: "possible", exact: false });
+    });
   });
 
   it("tri : probables d'abord", () => {

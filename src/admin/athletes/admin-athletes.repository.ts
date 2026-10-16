@@ -84,7 +84,7 @@ export class AdminAthletesRepository {
         OR: words.map((word) => ({ display_name: { contains: word, mode: "insensitive" as const } })),
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
-      select: { id: true, display_name: true, country_code: true, birth_date: true, sources: { select: { source: true } } },
+      select: { id: true, display_name: true, country_code: true, gender: true, birth_date: true, sources: { select: { source: true } } },
       orderBy: [{ display_name: "asc" }, { id: "asc" }],
       take: CANDIDATE_LIMIT,
     });

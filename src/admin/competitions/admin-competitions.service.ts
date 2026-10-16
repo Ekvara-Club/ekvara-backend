@@ -22,11 +22,14 @@ const DTO_TO_COLUMN: Record<CompetitionField, keyof CompetitionData> = {
   saison: "saison",
 };
 const FIELDS = Object.keys(DTO_TO_COLUMN) as CompetitionField[];
-// Champs qui interviennent dans la détection de doublons.
-const IDENTITY_FIELDS: CompetitionField[] = ["nom", "dateDebut", "ville"];
+// Champs qui interviennent dans la détection de doublons (dont l'identité
+// stricte : nom, dates, ville, pays).
+const IDENTITY_FIELDS: CompetitionField[] = ["nom", "dateDebut", "dateFin", "ville", "pays"];
 
 export const DUPLICATES_NOT_ACKNOWLEDGED_MESSAGE =
   "Compétition(s) potentiellement identique(s) : vérifiez-les et confirmez explicitement avant d'enregistrer";
+export const COMPETITION_EXISTS_MESSAGE =
+  "Cette compétition existe déjà (même nom, mêmes dates, même ville et même pays) : création impossible, ouvrez sa fiche";
 export const IMPORTED_READ_ONLY_MESSAGE =
   "Compétition importée : seule la saison est modifiable (les autres champs sont gérés par la synchronisation des sources)";
 
@@ -68,7 +71,7 @@ export class AdminCompetitionsService {
   async previewCreate(dto: AdminCompetitionCreateDto) {
     const data = toCompetitionData(dto);
     const candidates = await this.duplicatesFor(data);
-    return { data: toFieldsView(data), candidates, warnings: warningsFor(data) };
+    return { data: toFieldsView(data), candidates, blocking: blockingOf(candidates), warnings: warningsFor(data) };
   }
 
   async create(dto: AdminCompetitionCreateDto, adminUserId: string) {
@@ -76,7 +79,7 @@ export class AdminCompetitionsService {
     // Recalculé au moment de l'écriture : jamais de confiance dans le
     // résultat d'une prévisualisation antérieure.
     const candidates = await this.duplicatesFor(data);
-    assertAcknowledged(candidates, dto.acknowledgedDuplicateIds);
+    assertWritable(candidates, dto.acknowledgedDuplicateIds);
 
     const created = await this.repository.createManual(data);
     this.audit.record("admin.competition.created", {
@@ -89,8 +92,14 @@ export class AdminCompetitionsService {
 
   async previewUpdate(id: string, dto: AdminCompetitionUpdateDto) {
     const plan = await this.planUpdate(id, dto);
-    const candidates = plan.identityChanged ? await this.duplicatesFor(plan.next, id) : [];
-    return { data: toFieldsView(plan.next), changedFields: plan.changedFields, candidates, warnings: warningsFor(plan.next) };
+    const candidates = plan.identityChanged && plan.origin === "manual" ? await this.duplicatesFor(plan.next, id) : [];
+    return {
+      data: toFieldsView(plan.next),
+      changedFields: plan.changedFields,
+      candidates,
+      blocking: blockingOf(candidates),
+      warnings: warningsFor(plan.next),
+    };
   }
 
   async update(id: string, dto: AdminCompetitionUpdateDto, adminUserId: string) {
@@ -101,7 +110,7 @@ export class AdminCompetitionsService {
       await this.repository.updateSaison(id, plan.next.saison);
     } else {
       if (plan.identityChanged) {
-        assertAcknowledged(await this.duplicatesFor(plan.next, id), dto.acknowledgedDuplicateIds);
+        assertWritable(await this.duplicatesFor(plan.next, id), dto.acknowledgedDuplicateIds);
       }
       try {
         await this.repository.updateManual(id, plan.next);
@@ -161,9 +170,17 @@ export class AdminCompetitionsService {
   }
 }
 
-// Toute correspondance doit avoir été explicitement confirmée ; sinon 409
-// avec les candidates, rien n'est écrit. Jamais de fusion automatique.
-function assertAcknowledged(candidates: DuplicateCandidate[], acknowledged: string[] | undefined): void {
+function blockingOf(candidates: DuplicateCandidate[]): string | null {
+  return candidates.some((c) => c.exact) ? COMPETITION_EXISTS_MESSAGE : null;
+}
+
+// Compétition strictement identique : refus définitif (409 blocking), aucune
+// confirmation ne le lève. Sinon, toute correspondance doit avoir été
+// explicitement confirmée ; rien n'est écrit. Jamais de fusion automatique.
+function assertWritable(candidates: DuplicateCandidate[], acknowledged: string[] | undefined): void {
+  if (candidates.some((c) => c.exact)) {
+    throw new ConflictException({ statusCode: 409, message: COMPETITION_EXISTS_MESSAGE, blocking: true, candidates });
+  }
   const ack = new Set(acknowledged ?? []);
   const missing = candidates.filter((c) => !ack.has(c.id));
   if (missing.length > 0) {

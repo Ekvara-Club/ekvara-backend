@@ -29,6 +29,8 @@ const IDENTITY_FIELDS: AthleteField[] = ["displayName", "countryCode", "birthDat
 
 export const ATHLETE_DUPLICATES_MESSAGE =
   "Athlète(s) potentiellement identique(s) : vérifiez-les et confirmez explicitement avant d'enregistrer";
+export const ATHLETE_EXISTS_MESSAGE =
+  "Cet athlète existe déjà (même nom, même pays et même date de naissance) : création impossible, ouvrez sa fiche";
 export const IMPORTED_ATHLETE_MESSAGE =
   "Athlète importé : seuls le genre et la date de naissance peuvent être renseignés (le nom et le pays restent ceux de la source)";
 
@@ -87,14 +89,15 @@ export class AdminAthletesService {
   // Prévisualisation : validations + doublons, AUCUNE écriture.
   async previewCreate(dto: AdminAthleteCreateDto) {
     const data = toAthleteData(dto);
-    return { data: toFieldsView(data), candidates: await this.duplicatesFor(data), warnings: warningsFor(data) };
+    const candidates = await this.duplicatesFor(data);
+    return { data: toFieldsView(data), candidates, blocking: blockingOf(candidates), warnings: warningsFor(data) };
   }
 
   async create(dto: AdminAthleteCreateDto, adminUserId: string) {
     const data = toAthleteData(dto);
     // Recalculé au moment de l'écriture, jamais repris de la prévisualisation.
     const candidates = await this.duplicatesFor(data);
-    assertAcknowledged(candidates, dto.acknowledgedDuplicateIds);
+    assertWritable(candidates, dto.acknowledgedDuplicateIds);
     const created = await this.repository.createManual(data);
     this.audit.record("admin.athlete.created", {
       userId: adminUserId,
@@ -106,8 +109,16 @@ export class AdminAthletesService {
 
   async previewUpdate(id: string, dto: AdminAthleteUpdateDto) {
     const plan = await this.planUpdate(id, dto);
-    const candidates = plan.identityChanged ? await this.duplicatesFor(plan.next, id) : [];
-    return { data: toFieldsView(plan.next), changedFields: plan.changedFields, candidates, warnings: warningsFor(plan.next) };
+    // Athlète importé : seul l'enrichissement (genre, naissance) est possible,
+    // jamais de contrôle de doublon (même règle qu'à l'enregistrement).
+    const candidates = plan.identityChanged && plan.origin === "manual" ? await this.duplicatesFor(plan.next, id) : [];
+    return {
+      data: toFieldsView(plan.next),
+      changedFields: plan.changedFields,
+      candidates,
+      blocking: blockingOf(candidates),
+      warnings: warningsFor(plan.next),
+    };
   }
 
   async update(id: string, dto: AdminAthleteUpdateDto, adminUserId: string) {
@@ -117,7 +128,7 @@ export class AdminAthletesService {
     if (plan.origin === "imported") {
       await this.repository.updateEnrichment(id, plan.next);
     } else {
-      if (plan.identityChanged) assertAcknowledged(await this.duplicatesFor(plan.next, id), dto.acknowledgedDuplicateIds);
+      if (plan.identityChanged) assertWritable(await this.duplicatesFor(plan.next, id), dto.acknowledgedDuplicateIds);
       try {
         await this.repository.updateManual(id, plan.next);
       } catch (error) {
@@ -157,11 +168,23 @@ export class AdminAthletesService {
 
   private async duplicatesFor(data: AthleteData, excludeId?: string): Promise<AthleteDuplicateCandidate[]> {
     const existing = await this.repository.findDuplicateCandidates(nameTokens(data.display_name), excludeId);
-    return detectDuplicateAthletes({ displayName: data.display_name, countryCode: data.country_code, birthDate: data.birth_date }, existing);
+    return detectDuplicateAthletes(
+      { displayName: data.display_name, countryCode: data.country_code, gender: data.gender, birthDate: data.birth_date },
+      existing,
+    );
   }
 }
 
-function assertAcknowledged(candidates: AthleteDuplicateCandidate[], acknowledged: string[] | undefined): void {
+function blockingOf(candidates: AthleteDuplicateCandidate[]): string | null {
+  return candidates.some((c) => c.exact) ? ATHLETE_EXISTS_MESSAGE : null;
+}
+
+// Identité établie : refus définitif, aucune confirmation ne le lève. Sinon,
+// chaque correspondance doit avoir été explicitement confirmée.
+function assertWritable(candidates: AthleteDuplicateCandidate[], acknowledged: string[] | undefined): void {
+  if (candidates.some((c) => c.exact)) {
+    throw new ConflictException({ statusCode: 409, message: ATHLETE_EXISTS_MESSAGE, blocking: true, candidates });
+  }
   const ack = new Set(acknowledged ?? []);
   if (candidates.some((c) => !ack.has(c.id))) {
     throw new ConflictException({ statusCode: 409, message: ATHLETE_DUPLICATES_MESSAGE, candidates });

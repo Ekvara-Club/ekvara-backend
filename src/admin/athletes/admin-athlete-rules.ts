@@ -46,6 +46,7 @@ export interface ExistingAthlete {
   id: string;
   display_name: string;
   country_code: string | null;
+  gender: string | null;
   birth_date: Date | null;
   sources: { source: string }[];
 }
@@ -57,6 +58,9 @@ export interface AthleteDuplicateCandidate {
   birthDate: string | null;
   sources: string[];
   level: AthleteDuplicateLevel;
+  // Identité établie (voir detectDuplicateAthletes) : création refusée, aucune
+  // confirmation possible.
+  exact: boolean;
   reasons: string[];
 }
 
@@ -67,9 +71,13 @@ export interface AthleteDuplicateCandidate {
 // - nom inclus dans l'autre (au moins 2 mots en commun, ex. deuxième
 //   prénom) -> "possible".
 // Un nom seul ne suffit jamais à affirmer qu'il s'agit de la même personne :
-// l'administrateur confirme toujours explicitement.
+// l'administrateur confirme explicitement. Seule une identité ÉTABLIE est
+// "exacte" (bloquante) : même nom ET même pays ET même date de naissance,
+// tous trois connus des deux côtés, sans genre contradictoire. Un homonyme
+// dont le pays ou la date de naissance manque reste une simple
+// correspondance à confirmer.
 export function detectDuplicateAthletes(
-  input: { displayName: string; countryCode: string | null; birthDate: Date | null },
+  input: { displayName: string; countryCode: string | null; gender?: string | null; birthDate: Date | null },
   existing: ExistingAthlete[],
 ): AthleteDuplicateCandidate[] {
   const mine = nameTokens(input.displayName);
@@ -98,6 +106,19 @@ export function detectDuplicateAthletes(
         conflict = true;
       }
     }
+    if (input.gender && athlete.gender && input.gender !== athlete.gender) {
+      reasons.push("genre différent");
+      conflict = true;
+    }
+    const exact =
+      sameName &&
+      !conflict &&
+      input.countryCode !== null &&
+      input.countryCode === athlete.country_code &&
+      input.birthDate !== null &&
+      athlete.birth_date !== null &&
+      input.birthDate.getTime() === athlete.birth_date.getTime();
+    if (exact) reasons.push("identité établie (nom, pays et date de naissance identiques) : création impossible");
 
     candidates.push({
       id: athlete.id,
@@ -106,6 +127,7 @@ export function detectDuplicateAthletes(
       birthDate: athlete.birth_date ? athlete.birth_date.toISOString().slice(0, 10) : null,
       sources: [...new Set(athlete.sources.map((s) => s.source))],
       level: sameName && !conflict ? "probable" : "possible",
+      exact,
       reasons,
     });
   }

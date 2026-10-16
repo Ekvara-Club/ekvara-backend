@@ -159,6 +159,54 @@ describeOnTestDatabase("Athlètes internationaux EkvaraAdmin (intégration Postg
       expect(await prisma.external_athlete_source.count({ where: { external_athlete_id: first.id } })).toBe(1);
     });
 
+    it("identité établie (nom, pays, date de naissance) -> 409 bloquant, même avec confirmation ; rien n'est écrit", async () => {
+      const fields = { displayName: name("Sara OKAFOR"), countryCode: "NGA", birthDate: "2002-06-30" };
+      const first = await service.create(fields, ADMIN_ID);
+
+      const preview = await service.previewCreate({ ...fields, displayName: name("okafor sara") });
+      expect(preview.blocking).toMatch(/existe déjà/);
+      expect(preview.candidates).toEqual([expect.objectContaining({ id: first.id, exact: true })]);
+
+      const error = await service.create({ ...fields, acknowledgedDuplicateIds: [first.id] }, ADMIN_ID).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toMatchObject({ blocking: true });
+      expect(await countByName(fields.displayName)).toBe(1);
+    });
+
+    it("homonymes : même nom et même pays mais date de naissance inconnue ou différente -> confirmation, jamais bloquant", async () => {
+      const first = await service.create({ displayName: name("Ali HASSAN"), countryCode: "EGY", birthDate: "1999-01-15" }, ADMIN_ID);
+      for (const birthDate of [undefined, "2004-09-02"]) {
+        const preview = await service.previewCreate({ displayName: name("Ali HASSAN"), countryCode: "EGY", birthDate });
+        expect(preview.blocking).toBeNull();
+        expect(preview.candidates).toEqual([expect.objectContaining({ id: first.id, exact: false })]);
+      }
+      const second = await service.create(
+        { displayName: name("Ali HASSAN"), countryCode: "EGY", birthDate: "2004-09-02", acknowledgedDuplicateIds: [first.id] },
+        ADMIN_ID,
+      );
+      expect(second.id).not.toBe(first.id);
+    });
+
+    it("athlète WT enrichi (date de naissance) puis saisie manuelle identique -> refusée ; modification rendant identique -> refusée", async () => {
+      const imported = await importFromWt("exact", name("PARK Taejoon"), "KOR");
+      await service.update(imported.athleteId, { birthDate: "2004-07-12" }, ADMIN_ID);
+      const error = await service
+        .create({ displayName: name("Taejoon PARK"), countryCode: "KOR", birthDate: "2004-07-12", acknowledgedDuplicateIds: [imported.athleteId] }, ADMIN_ID)
+        .catch((e: unknown) => e);
+      expect((error as ConflictException).getResponse()).toMatchObject({ blocking: true });
+
+      const manual = await service.create({ displayName: name("Taejoon PARK"), countryCode: "KOR" }, ADMIN_ID).catch(async (e: ConflictException) =>
+        service.create(
+          { displayName: name("Taejoon PARK"), countryCode: "KOR", acknowledgedDuplicateIds: (e.getResponse() as { candidates: { id: string }[] }).candidates.map((c) => c.id) },
+          ADMIN_ID,
+        ),
+      );
+      expect((await service.previewUpdate(manual.id, { birthDate: "2004-07-12" })).blocking).toMatch(/existe déjà/);
+      const updateError = await service.update(manual.id, { birthDate: "2004-07-12" }, ADMIN_ID).catch((e: unknown) => e);
+      expect((updateError as ConflictException).getResponse()).toMatchObject({ blocking: true });
+      expect((await service.getProfile(manual.id)).birthDate).toBeNull();
+    });
+
     it("homonyme d'un athlète importé de WT, autre pays -> candidat « possible »", async () => {
       const imported = await importFromWt("homonym", name("Lucas MARTIN"), "BEL");
       const preview = await service.previewCreate({ displayName: name("Martin Lucas"), countryCode: "FRA" });

@@ -67,6 +67,37 @@ describe("detectDuplicateCompetitions (règle matchCompetitions réutilisée)", 
     ).toEqual([]);
   });
 
+  describe("compétition strictement identique (A1)", () => {
+    const known = existing("a", "Open Manuel d'Eaubonne", "2026-11-21", { date_fin: day("2026-11-22"), ville: "Eaubonne", pays: "France" });
+    const same = { dateFin: day("2026-11-22"), ville: "Eaubonne", pays: "France" };
+
+    it("nom (casse/accents/ponctuation ignorés), dates, ville et pays identiques -> exact (bloquant)", () => {
+      const [candidate] = detectDuplicateCompetitions(input("OPEN MANUEL D EAUBONNE", "2026-11-21", same), [known]);
+      expect(candidate).toMatchObject({ level: "probable", exact: true });
+      expect(candidate.reasons.join(" ")).toContain("strictement identique");
+    });
+
+    it("champs descriptifs différents (lieu, organisateur, niveau) -> toujours exact", () => {
+      const [candidate] = detectDuplicateCompetitions(
+        input("Open Manuel d'Eaubonne", "2026-11-21", { ...same, lieu: "Gymnase", organisateur: "Club", niveau: "Open" }),
+        [known],
+      );
+      expect(candidate.exact).toBe(true);
+    });
+
+    it("même nom mais autre date de fin, autre ville, autre pays ou date de fin inconnue -> confirmation, jamais bloquant", () => {
+      for (const extra of [{ dateFin: day("2026-11-23") }, { ville: "Paris" }, { pays: "Belgique" }, { dateFin: null }]) {
+        const [candidate] = detectDuplicateCompetitions(input("Open Manuel d'Eaubonne", "2026-11-21", { ...same, ...extra }), [known]);
+        expect(candidate).toMatchObject({ level: "probable", exact: false });
+      }
+    });
+
+    it("date de début proche ou nom seulement proche -> jamais bloquant", () => {
+      expect(detectDuplicateCompetitions(input("Open Manuel d'Eaubonne", "2026-11-20", same), [known])[0]).toMatchObject({ exact: false });
+      expect(detectDuplicateCompetitions(input("Open d'Eaubonne", "2026-11-21", same), [known])[0]?.exact ?? false).toBe(false);
+    });
+  });
+
   it("tri : probables d'abord, puis par écart de date croissant", () => {
     const candidates = detectDuplicateCompetitions(input("Championnat de France Seniors", "2026-06-10"), [
       existing("far", "Chpt France Seniors", "2026-06-15"),
