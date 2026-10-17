@@ -7,6 +7,8 @@ import { AdminAuditLogger } from "../admin-audit.logger";
 import { AdminGuard } from "../admin.guard";
 import { ADMIN_COOKIE_NAME, ADMIN_CSRF_HEADER } from "../admin-session";
 import { ADMIN_JWT, ADMIN_USER_IDS, createAdminJwtService } from "../admin-tokens";
+import { AdminSessionsRepository } from "../admin-sessions.repository";
+import { adminTestCookie, InMemoryAdminSessions } from "../../test-utils/admin-test.helper";
 import { AdminEntriesController } from "../entries/admin-entries.controller";
 import { AdminEntriesService } from "../entries/admin-entries.service";
 import { AdminMatchesController } from "./admin-matches.controller";
@@ -32,7 +34,8 @@ describe("Participants et combats (HTTP)", () => {
     entries = { list: ok(), previewCreate: ok(), create: ok(), previewUpdate: ok(), update: ok() };
     matches = { summary: ok(), listCategory: ok(), previewCreate: ok(), create: ok(), get: ok(), previewUpdate: ok(), update: ok() };
     const adminJwt = createAdminJwtService(TEST_JWT_SECRET);
-    cookie = `${ADMIN_COOKIE_NAME}=${adminJwt.sign({ sub: ADMIN_ID, csrf: CSRF })}`;
+    const sessions = new InMemoryAdminSessions();
+    cookie = adminTestCookie(adminJwt, sessions, ADMIN_ID, CSRF);
     const moduleRef = await Test.createTestingModule({
       controllers: [AdminEntriesController, AdminMatchesController],
       providers: [
@@ -42,6 +45,7 @@ describe("Participants et combats (HTTP)", () => {
         { provide: AdminAuditLogger, useValue: { record: jest.fn(), denied: jest.fn() } },
         { provide: ADMIN_JWT, useValue: adminJwt },
         { provide: ADMIN_USER_IDS, useValue: new Set([ADMIN_ID]) },
+        { provide: AdminSessionsRepository, useValue: sessions },
       ],
     }).compile();
     app = moduleRef.createNestApplication();

@@ -7,6 +7,8 @@ import { AdminAuditLogger } from "../admin-audit.logger";
 import { AdminGuard } from "../admin.guard";
 import { ADMIN_COOKIE_NAME, ADMIN_CSRF_HEADER } from "../admin-session";
 import { ADMIN_JWT, ADMIN_USER_IDS, createAdminJwtService } from "../admin-tokens";
+import { AdminSessionsRepository } from "../admin-sessions.repository";
+import { adminTestCookie, InMemoryAdminSessions } from "../../test-utils/admin-test.helper";
 import { AdminAthletesController } from "./admin-athletes.controller";
 import { AdminAthletesService } from "./admin-athletes.service";
 
@@ -32,7 +34,8 @@ describe("AdminAthletesController (HTTP)", () => {
       update: jest.fn().mockResolvedValue({ id: ATHLETE_ID }),
     };
     const adminJwt = createAdminJwtService(TEST_JWT_SECRET);
-    cookie = `${ADMIN_COOKIE_NAME}=${adminJwt.sign({ sub: ADMIN_ID, csrf: CSRF })}`;
+    const sessions = new InMemoryAdminSessions();
+    cookie = adminTestCookie(adminJwt, sessions, ADMIN_ID, CSRF);
     const moduleRef = await Test.createTestingModule({
       controllers: [AdminAthletesController],
       providers: [
@@ -41,6 +44,7 @@ describe("AdminAthletesController (HTTP)", () => {
         { provide: AdminAuditLogger, useValue: { record: jest.fn(), denied: jest.fn() } },
         { provide: ADMIN_JWT, useValue: adminJwt },
         { provide: ADMIN_USER_IDS, useValue: new Set([ADMIN_ID]) },
+        { provide: AdminSessionsRepository, useValue: sessions },
       ],
     }).compile();
     app = moduleRef.createNestApplication();

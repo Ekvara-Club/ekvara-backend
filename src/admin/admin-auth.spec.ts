@@ -1,7 +1,6 @@
 import { Controller, Get, INestApplication, Patch, Req, UseGuards, ValidationPipe } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { JwtService } from "@nestjs/jwt";
-import { ThrottlerModule } from "@nestjs/throttler";
 import * as argon2 from "argon2";
 import cookieParser from "cookie-parser";
 import type { Request } from "express";
@@ -17,6 +16,9 @@ import { AdminGuard } from "./admin.guard";
 import { deriveAdminJwtSecret } from "./admin-config";
 import { ADMIN_COOKIE_NAME, ADMIN_CSRF_HEADER, buildAdminCookieOptions } from "./admin-session";
 import { ADMIN_JWT, ADMIN_USER_IDS, createAdminJwtService } from "./admin-tokens";
+import { AdminLoginThrottle } from "./admin-login-throttle";
+import { AdminSessionsRepository } from "./admin-sessions.repository";
+import { InMemoryAdminLoginThrottle, InMemoryAdminSessions } from "../test-utils/admin-test.helper";
 
 const ADMIN_ID = "0b6f3c1e-2a4d-4e5f-9a7b-1c2d3e4f5a6b";
 const COACH_ID = "7c8d9e0f-1a2b-4c3d-8e9f-0a1b2c3d4e5f";
@@ -53,6 +55,7 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
   let users: Record<string, { id: string; email: string; nom: string; prenom: string; password_hash: string | null }>;
   let audit: { record: jest.Mock; denied: jest.Mock };
   let adminIds: Set<string>;
+  let sessions: InMemoryAdminSessions;
 
   beforeAll(async () => {
     const hash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
@@ -65,6 +68,7 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
   beforeEach(async () => {
     adminJwt = createAdminJwtService(TEST_JWT_SECRET);
     adminIds = new Set([ADMIN_ID]);
+    sessions = new InMemoryAdminSessions();
     audit = { record: jest.fn(), denied: jest.fn() };
     const prisma = {
       app_user: {
@@ -77,7 +81,7 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
     };
 
     const moduleRef = await Test.createTestingModule({
-      imports: [testJwtModule(), ThrottlerModule.forRoot([{ ttl: 60_000, limit: 5 }])],
+      imports: [testJwtModule()],
       controllers: [AdminAuthController, ProbeController],
       providers: [
         AdminAuthService,
@@ -87,6 +91,8 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
         { provide: PrismaService, useValue: prisma },
         { provide: ADMIN_JWT, useValue: adminJwt },
         { provide: ADMIN_USER_IDS, useValue: adminIds },
+        { provide: AdminSessionsRepository, useValue: sessions },
+        { provide: AdminLoginThrottle, useValue: new InMemoryAdminLoginThrottle() },
       ],
     }).compile();
 
@@ -124,7 +130,8 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
       expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
       expect(JSON.stringify(res.body)).not.toContain(cookie!.split(";")[0].split("=")[1]);
       expect(JSON.stringify(res.body)).not.toContain("password");
-      expect(audit.record).toHaveBeenCalledWith("admin.login.success", { userId: ADMIN_ID });
+      expect(audit.record).toHaveBeenCalledWith("admin.login.success", { userId: ADMIN_ID, sessionId: expect.any(String) });
+      expect([...sessions.rows.values()]).toEqual([expect.objectContaining({ app_user_id: ADMIN_ID, revoked_at: null })]);
     });
 
     it("email insensible à la casse, comme /auth/login", async () => {
@@ -138,6 +145,7 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
       expect(res.body.message).toBe("Identifiants invalides ou accès non autorisé");
       expect(cookiesOf(res)).toHaveLength(0);
       expect(sign).not.toHaveBeenCalled();
+      expect(sessions.rows.size).toBe(0);
       expect(audit.denied).toHaveBeenCalledWith("admin.login.denied", { userId: COACH_ID, reason: "not_admin" });
     });
 
@@ -164,11 +172,14 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
         .expect(400);
     });
 
-    it("throttling : la 6e tentative dans la minute -> 429", async () => {
+    it("limitation par IP : la 6e tentative dans la minute -> 429 avec Retry-After, sans vérifier le mot de passe", async () => {
       for (let i = 0; i < 5; i++) {
         await login("admin@ekvara.fr", "mauvais").expect(401);
       }
-      await login("admin@ekvara.fr").expect(429);
+      const res = await login("admin@ekvara.fr").expect(429);
+      expect(Number(res.headers["retry-after"])).toBeGreaterThan(0);
+      expect(cookiesOf(res)).toHaveLength(0);
+      expect(audit.denied).toHaveBeenCalledWith("admin.login.throttled", { userId: null, reason: "ip" });
     });
   });
 
@@ -198,13 +209,29 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
     });
 
     it("bon secret admin mais mauvaise audience -> 401", async () => {
-      const forged = new JwtService({ secret: deriveAdminJwtSecret(TEST_JWT_SECRET) }).sign({ sub: ADMIN_ID, csrf: "x" });
+      const forged = new JwtService({ secret: deriveAdminJwtSecret(TEST_JWT_SECRET) }).sign({ sub: ADMIN_ID, sid: sessions.activeFor(ADMIN_ID), csrf: "x" });
       await session().set("Cookie", `${ADMIN_COOKIE_NAME}=${forged}`).expect(401);
     });
 
-    it("session expirée -> 401", async () => {
-      const expired = adminJwt.sign({ sub: ADMIN_ID, csrf: "x" }, { expiresIn: -10 });
+    it("JWT expiré -> 401", async () => {
+      const expired = adminJwt.sign({ sub: ADMIN_ID, sid: sessions.activeFor(ADMIN_ID), csrf: "x" }, { expiresIn: -10 });
       await session().set("Cookie", `${ADMIN_COOKIE_NAME}=${expired}`).expect(401);
+    });
+
+    it("JWT valide mais session serveur expirée -> 401", async () => {
+      const { cookie } = await loggedIn();
+      for (const row of sessions.rows.values()) row.expires_at = new Date(Date.now() - 1000);
+      await session().set("Cookie", cookie).expect(401);
+      expect(audit.denied).toHaveBeenCalledWith("admin.access.denied", expect.objectContaining({ reason: "session_expired" }));
+    });
+
+    it("JWT bien signé sans sid, avec un sid inconnu, ou avec le sid d'un autre compte -> 401", async () => {
+      const without = adminJwt.sign({ sub: ADMIN_ID, csrf: "x" });
+      const unknown = adminJwt.sign({ sub: ADMIN_ID, sid: "00000000-0000-4000-8000-000000000000", csrf: "x" });
+      const foreign = adminJwt.sign({ sub: ADMIN_ID, sid: sessions.activeFor(COACH_ID), csrf: "x" });
+      for (const token of [without, unknown, foreign]) {
+        await session().set("Cookie", `${ADMIN_COOKIE_NAME}=${token}`).expect(401);
+      }
     });
 
     it("administrateur retiré de ADMIN_USER_IDS après connexion -> 403 à la requête suivante", async () => {
@@ -254,7 +281,21 @@ describe("Authentification EkvaraAdmin (HTTP, guards réels)", () => {
         .set(ADMIN_CSRF_HEADER, csrf)
         .expect(200);
       expect(adminCookieOf(res)).toMatch(/Expires=Thu, 01 Jan 1970/);
-      expect(audit.record).toHaveBeenCalledWith("admin.logout", { userId: ADMIN_ID });
+      expect(audit.record).toHaveBeenCalledWith("admin.logout", { userId: ADMIN_ID, sessionId: expect.any(String) });
+    });
+
+    it("révocation serveur : le cookie copié AVANT la déconnexion est refusé (401) dès la requête suivante", async () => {
+      const { cookie, csrf } = await loggedIn();
+      const other = await loggedIn();
+      await request(app.getHttpServer()).get("/admin/auth/session").set("Cookie", cookie).expect(200);
+      await request(app.getHttpServer()).post("/admin/auth/logout").set("Cookie", cookie).set(ADMIN_CSRF_HEADER, csrf).expect(200);
+
+      await request(app.getHttpServer()).get("/admin/auth/session").set("Cookie", cookie).expect(401);
+      await request(app.getHttpServer()).patch("/admin/probe").set("Cookie", cookie).set(ADMIN_CSRF_HEADER, csrf).expect(401);
+      await request(app.getHttpServer()).post("/admin/auth/logout").set("Cookie", cookie).set(ADMIN_CSRF_HEADER, csrf).expect(401);
+      expect(audit.denied).toHaveBeenCalledWith("admin.access.denied", expect.objectContaining({ reason: "session_revoked" }));
+      // Les autres sessions du même compte ne sont pas touchées.
+      await request(app.getHttpServer()).get("/admin/auth/session").set("Cookie", other.cookie).expect(200);
     });
   });
 

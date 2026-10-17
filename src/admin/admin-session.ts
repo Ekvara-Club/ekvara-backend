@@ -19,6 +19,7 @@ export const ADMIN_SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "
 
 export interface AdminJwtPayload {
   sub: string; // app_user.id
+  sid: string; // admin_session.id : session relue en base à chaque requête
   csrf: string;
   exp?: number;
 }
@@ -26,6 +27,7 @@ export interface AdminJwtPayload {
 // Identité admin résolue par AdminGuard, attachée à la requête.
 export interface AdminContext {
   userId: string;
+  sessionId: string;
   csrfToken: string;
   expiresAt: Date;
 }

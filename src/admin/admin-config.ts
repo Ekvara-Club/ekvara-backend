@@ -32,3 +32,9 @@ export function resolveAdminUserIds(env: NodeJS.ProcessEnv = process.env): Reado
 export function deriveAdminJwtSecret(jwtSecret: string): string {
   return createHmac("sha256", jwtSecret).update("ekvara-admin-session-v1").digest("hex");
 }
+
+// Clé des empreintes de la limitation des connexions (admin_login_attempt) :
+// également dérivée, distincte de la clé de signature.
+export function deriveAdminThrottleSecret(jwtSecret: string): string {
+  return createHmac("sha256", jwtSecret).update("ekvara-admin-throttle-v1").digest("hex");
+}
