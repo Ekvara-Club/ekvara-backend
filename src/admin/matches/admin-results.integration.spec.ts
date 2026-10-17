@@ -135,6 +135,70 @@ describeOnTestDatabase("Participants et combats EkvaraAdmin (intégration Postgr
       expect(await prisma.competition_entry.count({ where: { competition_id: competitionId, source: "martial_events" } })).toBe(0);
       expect(await prisma.competition_entry.findUnique({ where: { id: manual.id } })).not.toBeNull();
     });
+
+    describe("ajout groupé", () => {
+      const countManual = () => prisma.competition_entry.count({ where: { competition_id: competitionId, source: MANUAL_SOURCE } });
+
+      it("prévisualisation : statut par ligne (prêt / à confirmer / bloqué, y compris doublon interne à la liste), aucune écriture", async () => {
+        const existing = await entries.create(competitionId, { participantName: `${RUN} Bulk EXISTANT`, category: "Seniors M -74kg" }, ADMIN_ID);
+        const before = await countManual();
+        const preview = await entries.previewBulk(competitionId, {
+          entries: [
+            { participantName: `${RUN} Bulk ALPHA`, category: "Seniors M -74kg", country: "France" },
+            { participantName: `${RUN} Bulk EXISTANT`, category: "Seniors M -74kg" },
+            { participantName: `${RUN} EXISTANT Bulk`, category: "Juniors M -74kg" },
+            { participantName: `${RUN} alpha  BULK`, category: "seniors m -74KG" },
+          ],
+        });
+        expect(preview).toMatchObject({ total: 4, ready: 1, needsConfirmation: 1, blocked: 2 });
+        expect(preview.lines[0]).toMatchObject({ index: 0, blocking: null, candidates: [], data: { country: "France" } });
+        expect(preview.lines[1].blocking).toContain("déjà inscrit");
+        expect(preview.lines[2]).toMatchObject({ blocking: null, candidates: [expect.objectContaining({ id: existing.id, level: "possible" })] });
+        expect(preview.lines[3].blocking).toContain("ligne 1");
+        expect(await countManual()).toBe(before);
+      });
+
+      it("tout ou rien : une ligne bloquée ou non confirmée refuse le lot entier (409, aucune ligne créée)", async () => {
+        const existing = await entries.create(competitionId, { participantName: `${RUN} Bulk BETA`, category: "Cadets F -47kg" }, ADMIN_ID);
+        const before = await countManual();
+        const fresh = { participantName: `${RUN} Bulk GAMMA`, category: "Cadets F -47kg" };
+
+        const blocked = await entries
+          .createBulk(competitionId, { entries: [fresh, { participantName: `${RUN} Bulk BETA`, category: "Cadets F -47kg" }] }, ADMIN_ID)
+          .catch((e: unknown) => e);
+        expect(blocked).toBeInstanceOf(ConflictException);
+        expect((blocked as ConflictException).getResponse()).toMatchObject({ blocking: true, lines: [expect.objectContaining({ index: 1 })] });
+
+        const unconfirmed = await entries
+          .createBulk(competitionId, { entries: [fresh, { participantName: `${RUN} BETA Bulk`, category: "Cadets F -52kg" }] }, ADMIN_ID)
+          .catch((e: unknown) => e);
+        expect(unconfirmed).toBeInstanceOf(ConflictException);
+        expect((unconfirmed as ConflictException).getResponse()).toMatchObject({ lines: [expect.objectContaining({ index: 1, candidates: [expect.objectContaining({ id: existing.id })] })] });
+        expect(await countManual()).toBe(before);
+
+        const created = await entries.createBulk(
+          competitionId,
+          { entries: [fresh, { participantName: `${RUN} BETA Bulk`, category: "Cadets F -52kg", acknowledgedDuplicateIds: [existing.id] }] },
+          ADMIN_ID,
+        );
+        expect(created.total).toBe(2);
+        expect(created.items.map((e) => e.origin)).toEqual(["manual", "manual"]);
+        expect(await countManual()).toBe(before + 2);
+      });
+
+      it("contrainte unique violée en cours de transaction (écriture concurrente) : lot entier annulé", async () => {
+        const before = await countManual();
+        const repository = new AdminEntriesRepository(prisma);
+        const row = { age_category: null, gender: null, weight_category: null, club: null, country: null };
+        await expect(
+          repository.createMany(competitionId, [
+            { ...row, participant_name: `${RUN} Bulk DELTA`, source_category_raw_label: "Minimes M -38kg" },
+            { ...row, participant_name: `${RUN} Bulk DELTA`, source_category_raw_label: "Minimes M -38kg" },
+          ]),
+        ).rejects.toMatchObject({ code: "P2002" });
+        expect(await countManual()).toBe(before);
+      });
+    });
   });
 
   describe("combats", () => {

@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import type { competition_entry } from "../../../generated/prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { MANUAL_SOURCE } from "../competitions/admin-competition-origin";
 
@@ -47,6 +48,21 @@ export class AdminEntriesRepository {
 
   create(competitionId: string, data: EntryData) {
     return this.prisma.competition_entry.create({ data: { competition_id: competitionId, source: MANUAL_SOURCE, ...data } });
+  }
+
+  // Lot : une seule transaction, tout ou rien (une contrainte unique violée
+  // par n'importe quelle ligne annule toutes les lignes du lot).
+  createMany(competitionId: string, rows: EntryData[]) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const created: competition_entry[] = [];
+        for (const data of rows) {
+          created.push(await tx.competition_entry.create({ data: { competition_id: competitionId, source: MANUAL_SOURCE, ...data } }));
+        }
+        return created;
+      },
+      { timeout: 20_000 },
+    );
   }
 
   // La condition source = ekvara_manual fait partie de l'écriture elle-même :

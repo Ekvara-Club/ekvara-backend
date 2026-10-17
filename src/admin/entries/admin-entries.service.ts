@@ -2,12 +2,16 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import { competition_entry as EntryModel, Prisma } from "../../../generated/prisma/client";
 import { AdminAuditLogger } from "../admin-audit.logger";
 import { MANUAL_SOURCE } from "../competitions/admin-competition-origin";
-import { detectDuplicateEntries, EntryDuplicateCandidate, entryOrigin } from "./admin-entry-rules";
+import { nameTokens } from "../athletes/admin-athlete-rules";
+import { detectDuplicateEntries, EntryDuplicateCandidate, entryOrigin, ExistingEntry, normalizeLabel } from "./admin-entry-rules";
 import { AdminEntriesRepository, EntryData } from "./admin-entries.repository";
+import { AdminEntryBulkDto } from "./dto/admin-entry-bulk.dto";
 import { AdminEntryDto } from "./dto/admin-entry.dto";
 
 export const ENTRY_DUPLICATES_MESSAGE = "Participant(s) potentiellement identique(s) : vérifiez-les et confirmez explicitement avant d'enregistrer";
 export const ENTRY_EXISTS_MESSAGE = "Ce participant est déjà inscrit manuellement dans cette catégorie";
+export const BULK_BLOCKED_MESSAGE = "Certaines lignes ne peuvent pas être enregistrées : retirez-les ou corrigez-les, aucun participant n'a été ajouté";
+export const BULK_TWIN_MESSAGE = "Même participant (nom et catégorie) déjà présent plus haut dans la liste";
 export const IMPORTED_ENTRY_MESSAGE = "Participant importé : ses informations sont maintenues par la source et ne sont pas modifiables";
 
 @Injectable()
@@ -46,6 +50,46 @@ export class AdminEntriesService {
     return toEntryView(created);
   }
 
+  // Lot — prévisualisation : statut de chaque ligne, AUCUNE écriture.
+  async previewBulk(competitionId: string, dto: AdminEntryBulkDto) {
+    await this.assertCompetition(competitionId);
+    const lines = await this.analyseBulk(competitionId, dto.entries);
+    return {
+      competitionId,
+      total: lines.length,
+      ready: lines.filter((l) => !l.blocking && l.candidates.length === 0).length,
+      needsConfirmation: lines.filter((l) => !l.blocking && l.candidates.length > 0).length,
+      blocked: lines.filter((l) => l.blocking).length,
+      lines: lines.map(toBulkLineView),
+    };
+  }
+
+  // Lot — enregistrement TOUT OU RIEN : la moindre ligne bloquée ou non
+  // confirmée refuse le lot entier (409, lignes concernées détaillées) ;
+  // sinon une seule transaction crée toutes les lignes.
+  async createBulk(competitionId: string, dto: AdminEntryBulkDto, adminUserId: string) {
+    await this.assertCompetition(competitionId);
+    const lines = await this.analyseBulk(competitionId, dto.entries);
+    const blocked = lines.filter((l) => l.blocking);
+    if (blocked.length > 0) {
+      throw new ConflictException({ statusCode: 409, message: BULK_BLOCKED_MESSAGE, blocking: true, lines: blocked.map(toBulkLineView) });
+    }
+    const pending = lines.filter(unconfirmed);
+    if (pending.length > 0) {
+      throw new ConflictException({ statusCode: 409, message: ENTRY_DUPLICATES_MESSAGE, lines: pending.map(toBulkLineView) });
+    }
+    let created: EntryModel[];
+    try {
+      created = await this.repository.createMany(competitionId, lines.map((l) => l.data));
+    } catch (error) {
+      // Filet (écriture concurrente) : la transaction est annulée en entier.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw new ConflictException(ENTRY_EXISTS_MESSAGE);
+      throw error;
+    }
+    this.audit.record("admin.entry.bulk_created", { userId: adminUserId, competitionId, count: created.length, entryIds: created.map((e) => e.id) });
+    return { competitionId, total: created.length, items: created.map(toEntryView) };
+  }
+
   async previewUpdate(id: string, dto: AdminEntryDto) {
     const current = await this.manualEntry(id);
     const data = toEntryData(dto);
@@ -80,15 +124,26 @@ export class AdminEntriesService {
     return entry;
   }
 
-  // blocking : doublon EXACT d'un participant manuel (même nom, même
-  // catégorie) — interdit par la contrainte unique, jamais "confirmable".
   private async analyse(competitionId: string, data: EntryData, excludeId?: string) {
-    const existing = await this.repository.findForDuplicates(competitionId, excludeId);
-    const exact = existing.some(
-      (e) => e.source === MANUAL_SOURCE && e.participant_name === data.participant_name && e.source_category_raw_label === data.source_category_raw_label,
-    );
-    const candidates = detectDuplicateEntries({ participantName: data.participant_name, category: data.source_category_raw_label }, existing);
-    return { blocking: exact ? ENTRY_EXISTS_MESSAGE : null, candidates };
+    return analyseAgainst(await this.repository.findForDuplicates(competitionId, excludeId), data);
+  }
+
+  // Lot : chaque ligne est analysée comme une saisie unitaire contre les
+  // inscrits existants (une seule lecture), plus contre les lignes
+  // PRÉCÉDENTES du lot : même nom et même catégorie -> ligne bloquée (même
+  // participant deux fois dans la liste).
+  private async analyseBulk(competitionId: string, dtos: AdminEntryDto[]): Promise<BulkLine[]> {
+    const existing = await this.repository.findForDuplicates(competitionId);
+    const seen: { name: string; category: string; index: number }[] = [];
+    return dtos.map((dto, index) => {
+      const data = toEntryData(dto);
+      const own = analyseAgainst(existing, data);
+      const key = { name: nameTokens(data.participant_name).join(" "), category: normalizeLabel(data.source_category_raw_label) };
+      const twin = key.name ? seen.find((s) => s.name === key.name && s.category === key.category) : undefined;
+      seen.push({ ...key, index });
+      const blocking = own.blocking ?? (twin ? bulkTwinMessage(twin.index) : null);
+      return { index, data, blocking, candidates: own.candidates, acknowledged: dto.acknowledgedDuplicateIds };
+    });
   }
 
   private assertWritable(analysis: { blocking: string | null; candidates: EntryDuplicateCandidate[] }, acknowledged: string[] | undefined) {
@@ -102,6 +157,38 @@ export class AdminEntriesService {
   private async assertCompetition(competitionId: string) {
     if ((await this.repository.competitionExists(competitionId)) === 0) throw new NotFoundException("Compétition introuvable");
   }
+}
+
+interface BulkLine {
+  index: number;
+  data: EntryData;
+  blocking: string | null;
+  candidates: EntryDuplicateCandidate[];
+  acknowledged: string[] | undefined;
+}
+
+// blocking : doublon EXACT d'un participant manuel (même nom, même
+// catégorie) — interdit par la contrainte unique, jamais "confirmable".
+function analyseAgainst(existing: ExistingEntry[], data: EntryData) {
+  const exact = existing.some(
+    (e) => e.source === MANUAL_SOURCE && e.participant_name === data.participant_name && e.source_category_raw_label === data.source_category_raw_label,
+  );
+  const candidates = detectDuplicateEntries({ participantName: data.participant_name, category: data.source_category_raw_label }, existing);
+  return { blocking: exact ? ENTRY_EXISTS_MESSAGE : null, candidates };
+}
+
+function bulkTwinMessage(index: number): string {
+  return `${BULK_TWIN_MESSAGE} (ligne ${index + 1})`;
+}
+
+function unconfirmed(line: BulkLine): boolean {
+  const ack = new Set(line.acknowledged ?? []);
+  return line.candidates.some((c) => !ack.has(c.id));
+}
+
+// index : position dans le lot envoyé (0 = première ligne).
+function toBulkLineView(line: BulkLine) {
+  return { index: line.index, data: toFieldsView(line.data), blocking: line.blocking, candidates: line.candidates, warnings: warningsFor(line.data) };
 }
 
 function toEntryData(dto: AdminEntryDto): EntryData {

@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patc
 import type { Request } from "express";
 import { AdminGuard } from "../admin.guard";
 import { AdminEntriesService } from "./admin-entries.service";
+import { AdminEntryBulkDto } from "./dto/admin-entry-bulk.dto";
 import { AdminEntryDto } from "./dto/admin-entry.dto";
 
 // Participants (competition_entry) d'une compétition. AdminGuard sur TOUTES
@@ -25,6 +26,17 @@ export class AdminEntriesController {
   @Post("competitions/:competitionId/entries")
   create(@Param("competitionId", ParseUUIDPipe) competitionId: string, @Body() dto: AdminEntryDto, @Req() req: Request) {
     return this.service.create(competitionId, dto, req.admin!.userId);
+  }
+
+  @Post("competitions/:competitionId/entries/bulk/preview")
+  @HttpCode(HttpStatus.OK)
+  previewBulk(@Param("competitionId", ParseUUIDPipe) competitionId: string, @Body() dto: AdminEntryBulkDto) {
+    return this.service.previewBulk(competitionId, dto);
+  }
+
+  @Post("competitions/:competitionId/entries/bulk")
+  createBulk(@Param("competitionId", ParseUUIDPipe) competitionId: string, @Body() dto: AdminEntryBulkDto, @Req() req: Request) {
+    return this.service.createBulk(competitionId, dto, req.admin!.userId);
   }
 
   @Post("entries/:id/preview")
