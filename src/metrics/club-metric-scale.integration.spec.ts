@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { MetricsRepository } from "./metrics.repository";
 import { MetricsService } from "./metrics.service";
+import { ensureMetricTypeCatalog } from "../test-utils/test-database";
 
 // Intégration Postgres réelle : le barème enregistré par un coach s'applique
 // aux athlètes de SON club (et seulement à eux), et se réinitialise.
@@ -16,6 +17,8 @@ describe("Barème de club — étoile de compétences (intégration Postgres)", 
   beforeAll(async () => {
     prisma = new PrismaService();
     service = new MetricsService(new MetricsRepository(prisma));
+    // Base de test neuve : catalogue de référence créé si absent (sans effet ailleurs).
+    await ensureMetricTypeCatalog(prisma);
     reactionTypeId = (await prisma.metric_type.findUniqueOrThrow({ where: { code: "temps_reaction" } })).id;
   });
 

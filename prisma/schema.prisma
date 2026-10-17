@@ -32,6 +32,10 @@ model app_user {
   // voir modèle notification ci-dessous pour la justification complète.
   notifications_received notification[] @relation("notification_recipient")
   notifications_sent     notification[] @relation("notification_actor")
+
+  // Portail EkvaraAdmin : sessions d'administration (voir admin_session).
+  // Relation Prisma uniquement, aucune colonne ajoutée à app_user.
+  admin_sessions admin_session[]
 }
 
 model athlete {
@@ -940,4 +944,38 @@ model wt_backfill_event {
   @@unique([run_id, slug])
   @@index([run_id, sequence])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Portail EkvaraAdmin — sessions et limitation des connexions.
+// Tables propres au portail, indépendantes des sessions Athlete/Coach (qui
+// restent des JWT sans état). Horodatages en timestamptz : comparés à now()
+// côté base, sans dépendre du fuseau de la session PostgreSQL.
+// ---------------------------------------------------------------------------
+
+// Une ligne par connexion administrateur. Le JWT admin porte son id (sid) ;
+// AdminGuard la relit à chaque requête : une session révoquée (déconnexion)
+// ou expirée est refusée immédiatement, même si le JWT a été copié avant.
+model admin_session {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  app_user_id String    @db.Uuid
+  app_user    app_user  @relation(fields: [app_user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  expires_at  DateTime  @db.Timestamptz(6)
+  revoked_at  DateTime? @db.Timestamptz(6)
+
+  @@index([app_user_id])
+  @@index([expires_at])
+}
+
+// Compteurs de tentatives de connexion admin, partagés entre toutes les
+// instances (Vercel) : fenêtre fixe, incrément atomique (INSERT ... ON
+// CONFLICT). key = HMAC de l'IP ou du compte : aucune IP ni adresse e-mail
+// stockée en clair.
+model admin_login_attempt {
+  key          String   @id @db.VarChar(80)
+  window_start DateTime @db.Timestamptz(6)
+  hits         Int
+
+  @@index([window_start])
 }

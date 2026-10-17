@@ -2,14 +2,20 @@ import "dotenv/config";
 import { PrismaService } from "../../prisma/prisma.service";
 import { seedMetricTypes } from "./seed-metric-types";
 import { METRIC_TYPES_SEED_DATA } from "./metric-types.seed-data";
+import { ensureMetricTypeCatalog } from "../../test-utils/test-database";
 
 // Intégration Postgres réelle. Ne supprime rien : sur la base de dev les 6
 // capacités existent déjà -> le seed doit les laisser strictement intactes.
+// Sur une base de test neuve, le catalogue est d'abord garanti (même
+// prérequis que les autres specs metric_type, exécutées en parallèle) : ce
+// test vérifie l'idempotence sur un catalogue existant, jamais une course
+// entre deux seeds concurrents.
 describe("seedMetricTypes (intégration Postgres)", () => {
   let prisma: PrismaService;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     prisma = new PrismaService();
+    await ensureMetricTypeCatalog(prisma);
   });
 
   afterAll(async () => {

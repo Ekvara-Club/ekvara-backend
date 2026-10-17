@@ -14,6 +14,7 @@
     "import:competitions": "node dist/src/competitions/competitions-import.cli.js",
     "sync:sources": "node dist/src/sync/sync-sources.cli.js",
     "test": "jest",
+    "test:testdb": "node --env-file=.env.test node_modules/jest/bin/jest.js",
     "seed:exercises": "nest build && node dist/src/exercises/seed/seed-exercises.js",
     "seed:metrics": "node dist/src/metrics/seed/seed-metric-types.cli.js",
     "import:wt-results": "nest build && node dist/src/international/wt-results/wtr-import.cli.js",

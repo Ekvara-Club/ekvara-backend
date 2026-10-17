@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { MetricsRepository } from "../metrics/metrics.repository";
 import { CoachDashboardRepository } from "./coach-dashboard.repository";
+import { ensureMetricTypeCatalog } from "../test-utils/test-database";
 
 // Test d'intégration contre la vraie base Postgres locale : les requêtes
 // batch (where athlete_id IN (...), tri multi-colonnes) dépendent de
@@ -15,9 +16,11 @@ describe("CoachDashboardRepository (intégration Postgres)", () => {
   const createdCompetitionIds: string[] = [];
   let counter = 0;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     prisma = new PrismaService();
     repository = new CoachDashboardRepository(prisma, new MetricsRepository(prisma));
+    // Base de test neuve : catalogue de référence créé si absent (sans effet ailleurs).
+    await ensureMetricTypeCatalog(prisma);
   }, 30000);
 
   afterEach(async () => {

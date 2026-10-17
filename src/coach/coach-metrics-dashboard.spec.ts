@@ -6,6 +6,7 @@ import { CoachRepository } from "./coach.repository";
 import { CoachGroupsRepository } from "./coach-groups.repository";
 import { CoachDashboardRepository } from "./coach-dashboard.repository";
 import { CoachDashboardService } from "./coach-dashboard.service";
+import { ensureMetricTypeCatalog } from "../test-utils/test-database";
 
 // Ticket "Évaluations / Métriques Coach" §19/§32 : le dashboard coach
 // (ticket #2, non modifié dans ce ticket) doit refléter IMMÉDIATEMENT une
@@ -32,6 +33,8 @@ describe("Dashboard coach — réaction aux mesures (intégration Postgres)", ()
       new CoachGroupsRepository(prisma),
       new CoachDashboardRepository(prisma, metricsRepository),
     );
+    // Base de test neuve : catalogue de référence créé si absent (sans effet ailleurs).
+    await ensureMetricTypeCatalog(prisma);
 
     const reaction = await prisma.metric_type.findUnique({ where: { code: "temps_reaction" } });
     if (!reaction) throw new Error("metric_type 'temps_reaction' absent du seed dev");

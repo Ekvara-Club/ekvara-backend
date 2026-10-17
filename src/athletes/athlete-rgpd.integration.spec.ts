@@ -2,6 +2,7 @@ import "dotenv/config";
 import { ConflictException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { deleteAthleteAccount, exportAthleteData } from "./athletes.service";
+import { ensureMetricTypeCatalog } from "../test-utils/test-database";
 
 // Intégration Postgres réelle : export complet et suppression en cascade
 // d'un athlète qui a des données dans la plupart des tables.
@@ -13,6 +14,8 @@ describe("RGPD — export et suppression du compte athlète (intégration Postgr
 
   beforeAll(async () => {
     prisma = new PrismaService();
+    // Base de test neuve : catalogue de référence créé si absent (sans effet ailleurs).
+    await ensureMetricTypeCatalog(prisma);
     competitionId = (await prisma.competition.create({ data: { nom: `Open RGPD ${runId}`, date_debut: new Date("2026-05-10") } })).id;
   });
 

@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaService } from "../prisma/prisma.service";
 import { MetricsService } from "../metrics/metrics.service";
 import { MetricsRepository } from "../metrics/metrics.repository";
+import { ensureMetricTypeCatalog } from "../test-utils/test-database";
 
 // Test d'intégration contre la vraie base Postgres locale (ticket
 // "Évaluations / Métriques Coach" §30) : fixtures coach A + athlete A (lié)
@@ -26,6 +27,8 @@ describe("Évaluations coach — metric_measurement (intégration Postgres)", ()
   beforeAll(async () => {
     prisma = new PrismaService();
     metricsService = new MetricsService(new MetricsRepository(prisma));
+    // Base de test neuve : catalogue de référence créé si absent (sans effet ailleurs).
+    await ensureMetricTypeCatalog(prisma);
 
     const force = await prisma.metric_type.findUnique({ where: { code: "force" } });
     const reaction = await prisma.metric_type.findUnique({ where: { code: "temps_reaction" } });
