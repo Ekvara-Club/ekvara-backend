@@ -47,6 +47,11 @@ model athlete {
   grade                         String?                         @db.VarChar(100)
   date_naissance                DateTime?                       @db.Date
   niveau_sportif                String?                         @db.VarChar(50)
+  // Mensurations déclarées par l'athlète lui-même (PUT /athletes/:id/measurements),
+  // en cm entiers, visibles par ses coachs. Valeur actuelle seulement (pas
+  // d'historique) ; NULL = non renseigné, jamais une valeur devinée.
+  taille_cm                     Int?                            @db.SmallInt
+  longueur_bras_cm              Int?                            @db.SmallInt
   // État de forme déclaré par l'athlète lui-même (PUT /athletes/:id/condition),
   // visible par ses coachs. Convention varchar contrôlée en application
   // (ATHLETE_CONDITIONS), jamais un enum Prisma : "actif" | "malade" |
