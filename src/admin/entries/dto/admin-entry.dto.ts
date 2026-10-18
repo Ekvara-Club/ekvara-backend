@@ -53,6 +53,13 @@ export class AdminEntryDto {
   @MaxLength(100)
   country?: string | null;
 
+  // Fiche athlète (external_athlete) choisie explicitement dans la base ;
+  // absente ou vide = participant sans fiche liée. Jamais un compte EKVARA.
+  @Transform(trimToNull)
+  @IsOptional()
+  @IsUUID("all", { message: "Identifiant de fiche athlète invalide" })
+  externalAthleteId?: string | null;
+
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(100)

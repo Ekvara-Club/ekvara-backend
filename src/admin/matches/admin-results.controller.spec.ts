@@ -31,7 +31,7 @@ describe("Participants et combats (HTTP)", () => {
 
   beforeEach(async () => {
     const ok = () => jest.fn().mockResolvedValue({ ok: true });
-    entries = { list: ok(), previewCreate: ok(), create: ok(), previewBulk: ok(), createBulk: ok(), previewUpdate: ok(), update: ok() };
+    entries = { list: ok(), previewCreate: ok(), create: ok(), previewBulk: ok(), createBulk: ok(), previewUpdate: ok(), update: ok(), linkAthlete: ok() };
     matches = { summary: ok(), listCategory: ok(), previewCreate: ok(), create: ok(), get: ok(), previewUpdate: ok(), update: ok() };
     const adminJwt = createAdminJwtService(TEST_JWT_SECRET);
     const sessions = new InMemoryAdminSessions();
@@ -109,6 +109,7 @@ describe("Participants et combats (HTTP)", () => {
     ["catégorie manquante", { participantName: "Emma" }],
     ["genre hors convention", { ...ENTRY, gender: "F" }],
     ["champ inconnu (compte EKVARA)", { ...ENTRY, athleteId: ATHLETE_A }],
+    ["fiche athlète non UUID", { ...ENTRY, externalAthleteId: "kim" }],
   ])("participant : %s -> 400", async (_label, body) => {
     await postEntry(body).expect(400);
     expect(entries.create).not.toHaveBeenCalled();
@@ -149,6 +150,16 @@ describe("Participants et combats (HTTP)", () => {
     );
     await postBulk({ entries: [ENTRY] }, "bulk/preview").expect(200);
     expect(entries.previewBulk).toHaveBeenCalledWith(COMPETITION_ID, { entries: [expect.objectContaining(ENTRY)] });
+  });
+
+  it("association participant -> fiche : CSRF exigé, identifiant validé, service appelé avec la fiche", async () => {
+    const url = `/admin/entries/${COMPETITION_ID}/athlete`;
+    await http().put(url).set("Cookie", cookie).send({ externalAthleteId: ATHLETE_A }).expect(403);
+    await http().put(url).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send({ externalAthleteId: "kim" }).expect(400);
+    await http().put(url).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send({}).expect(400);
+    expect(entries.linkAthlete).not.toHaveBeenCalled();
+    await http().put(url).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send({ externalAthleteId: ATHLETE_A }).expect(200);
+    expect(entries.linkAthlete).toHaveBeenCalledWith(COMPETITION_ID, ATHLETE_A, ADMIN_ID);
   });
 
   it("liste des combats d'une catégorie : paramètre requis et borné", async () => {

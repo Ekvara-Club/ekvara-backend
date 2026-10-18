@@ -1,10 +1,10 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
-import { competition_entry as EntryModel, Prisma } from "../../../generated/prisma/client";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { Prisma } from "../../../generated/prisma/client";
 import { AdminAuditLogger } from "../admin-audit.logger";
 import { MANUAL_SOURCE } from "../competitions/admin-competition-origin";
 import { nameTokens } from "../athletes/admin-athlete-rules";
 import { detectDuplicateEntries, EntryDuplicateCandidate, entryOrigin, ExistingEntry, normalizeLabel } from "./admin-entry-rules";
-import { AdminEntriesRepository, EntryData } from "./admin-entries.repository";
+import { AdminEntriesRepository, EntryData, EntryRecord as EntryModel } from "./admin-entries.repository";
 import { AdminEntryBulkDto } from "./dto/admin-entry-bulk.dto";
 import { AdminEntryDto } from "./dto/admin-entry.dto";
 
@@ -12,6 +12,8 @@ export const ENTRY_DUPLICATES_MESSAGE = "Participant(s) potentiellement identiqu
 export const ENTRY_EXISTS_MESSAGE = "Ce participant est déjà inscrit manuellement dans cette catégorie";
 export const BULK_BLOCKED_MESSAGE = "Certaines lignes ne peuvent pas être enregistrées : retirez-les ou corrigez-les, aucun participant n'a été ajouté";
 export const BULK_TWIN_MESSAGE = "Même participant (nom et catégorie) déjà présent plus haut dans la liste";
+export const ATHLETE_TWICE_MESSAGE = "Cet athlète est déjà inscrit dans cette catégorie";
+export const ATHLETE_UNKNOWN_MESSAGE = "Fiche athlète introuvable : choisissez-la à nouveau dans la base";
 export const IMPORTED_ENTRY_MESSAGE = "Participant importé : ses informations sont maintenues par la source et ne sont pas modifiables";
 
 @Injectable()
@@ -117,6 +119,25 @@ export class AdminEntriesService {
     return toEntryView((await this.repository.findById(id))!);
   }
 
+  // Association explicite participant -> fiche athlète, choisie par
+  // l'administrateur lors de la saisie d'un combat (jamais déduite du nom).
+  async linkAthlete(id: string, externalAthleteId: string, adminUserId: string) {
+    const entry = await this.repository.findById(id);
+    if (!entry) throw new NotFoundException("Participant introuvable");
+    if (entry.external_athlete_id === externalAthleteId) return toEntryView(entry);
+    if (!(await this.repository.existingAthleteIds([externalAthleteId])).has(externalAthleteId)) {
+      throw new BadRequestException(ATHLETE_UNKNOWN_MESSAGE);
+    }
+    const category = normalizeLabel(entry.source_category_raw_label);
+    const others = await this.repository.findForDuplicates(entry.competition_id, id);
+    if (others.some((e) => e.external_athlete_id === externalAthleteId && normalizeLabel(e.source_category_raw_label) === category)) {
+      throw new ConflictException(ATHLETE_TWICE_MESSAGE);
+    }
+    const updated = await this.repository.setAthlete(id, externalAthleteId);
+    this.audit.record("admin.entry.athlete_linked", { userId: adminUserId, entryId: id, athleteId: externalAthleteId });
+    return toEntryView(updated);
+  }
+
   private async manualEntry(id: string): Promise<EntryModel> {
     const entry = await this.repository.findById(id);
     if (!entry) throw new NotFoundException("Participant introuvable");
@@ -125,21 +146,30 @@ export class AdminEntriesService {
   }
 
   private async analyse(competitionId: string, data: EntryData, excludeId?: string) {
-    return analyseAgainst(await this.repository.findForDuplicates(competitionId, excludeId), data);
+    const athletes = await this.repository.existingAthleteIds(data.external_athlete_id ? [data.external_athlete_id] : []);
+    return analyseAgainst(await this.repository.findForDuplicates(competitionId, excludeId), data, athletes);
   }
 
   // Lot : chaque ligne est analysée comme une saisie unitaire contre les
   // inscrits existants (une seule lecture), plus contre les lignes
-  // PRÉCÉDENTES du lot : même nom et même catégorie -> ligne bloquée (même
-  // participant deux fois dans la liste).
+  // PRÉCÉDENTES du lot : même nom (ou même fiche athlète) et même catégorie
+  // -> ligne bloquée (même participant deux fois dans la liste).
   private async analyseBulk(competitionId: string, dtos: AdminEntryDto[]): Promise<BulkLine[]> {
     const existing = await this.repository.findForDuplicates(competitionId);
-    const seen: { name: string; category: string; index: number }[] = [];
+    const linked = dtos.map((dto) => dto.externalAthleteId).filter((id): id is string => !!id);
+    const athletes = await this.repository.existingAthleteIds([...new Set(linked)]);
+    const seen: { name: string; athlete: string | null; category: string; index: number }[] = [];
     return dtos.map((dto, index) => {
       const data = toEntryData(dto);
-      const own = analyseAgainst(existing, data);
-      const key = { name: nameTokens(data.participant_name).join(" "), category: normalizeLabel(data.source_category_raw_label) };
-      const twin = key.name ? seen.find((s) => s.name === key.name && s.category === key.category) : undefined;
+      const own = analyseAgainst(existing, data, athletes);
+      const key = {
+        name: nameTokens(data.participant_name).join(" "),
+        athlete: data.external_athlete_id,
+        category: normalizeLabel(data.source_category_raw_label),
+      };
+      const twin = seen.find(
+        (s) => s.category === key.category && ((key.name !== "" && s.name === key.name) || (key.athlete !== null && s.athlete === key.athlete)),
+      );
       seen.push({ ...key, index });
       const blocking = own.blocking ?? (twin ? bulkTwinMessage(twin.index) : null);
       return { index, data, blocking, candidates: own.candidates, acknowledged: dto.acknowledgedDuplicateIds };
@@ -167,14 +197,22 @@ interface BulkLine {
   acknowledged: string[] | undefined;
 }
 
-// blocking : doublon EXACT d'un participant manuel (même nom, même
-// catégorie) — interdit par la contrainte unique, jamais "confirmable".
-function analyseAgainst(existing: ExistingEntry[], data: EntryData) {
+// blocking, jamais "confirmable" :
+// - doublon EXACT d'un participant manuel (même nom, même catégorie),
+//   interdit par la contrainte unique ;
+// - même fiche athlète déjà inscrite dans la même catégorie ;
+// - fiche athlète liée introuvable.
+function analyseAgainst(existing: ExistingEntry[], data: EntryData, knownAthletes: Set<string>) {
+  const candidates = detectDuplicateEntries({ participantName: data.participant_name, category: data.source_category_raw_label }, existing);
+  const athlete = data.external_athlete_id;
+  if (athlete && !knownAthletes.has(athlete)) return { blocking: ATHLETE_UNKNOWN_MESSAGE, candidates };
   const exact = existing.some(
     (e) => e.source === MANUAL_SOURCE && e.participant_name === data.participant_name && e.source_category_raw_label === data.source_category_raw_label,
   );
-  const candidates = detectDuplicateEntries({ participantName: data.participant_name, category: data.source_category_raw_label }, existing);
-  return { blocking: exact ? ENTRY_EXISTS_MESSAGE : null, candidates };
+  if (exact) return { blocking: ENTRY_EXISTS_MESSAGE, candidates };
+  const category = normalizeLabel(data.source_category_raw_label);
+  const twice = athlete !== null && existing.some((e) => e.external_athlete_id === athlete && normalizeLabel(e.source_category_raw_label) === category);
+  return { blocking: twice ? ATHLETE_TWICE_MESSAGE : null, candidates };
 }
 
 function bulkTwinMessage(index: number): string {
@@ -200,6 +238,7 @@ function toEntryData(dto: AdminEntryDto): EntryData {
     weight_category: dto.weightCategory ?? null,
     club: dto.club ?? null,
     country: dto.country ?? null,
+    external_athlete_id: dto.externalAthleteId ?? null,
   };
 }
 
@@ -211,6 +250,7 @@ const FIELD_COLUMNS: Record<string, keyof EntryData> = {
   weightCategory: "weight_category",
   club: "club",
   country: "country",
+  externalAthleteId: "external_athlete_id",
 };
 
 function changedFields(current: EntryModel, next: EntryData): string[] {
@@ -235,14 +275,17 @@ function toFieldsView(data: EntryData) {
     weightCategory: data.weight_category,
     club: data.club,
     country: data.country,
+    externalAthleteId: data.external_athlete_id,
   };
 }
 
 function toEntryView(entry: EntryModel) {
+  const athlete = entry.external_athlete;
   return {
     id: entry.id,
     competitionId: entry.competition_id,
     ...toFieldsView(entry),
+    athlete: athlete ? { id: athlete.id, displayName: athlete.display_name, countryCode: athlete.country_code } : null,
     league: entry.league,
     source: entry.source,
     origin: entryOrigin(entry.source),

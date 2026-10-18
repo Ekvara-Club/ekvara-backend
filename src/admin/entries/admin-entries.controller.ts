@@ -1,7 +1,8 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
 import { AdminGuard } from "../admin.guard";
 import { AdminEntriesService } from "./admin-entries.service";
+import { AdminEntryAthleteDto } from "./dto/admin-entry-athlete.dto";
 import { AdminEntryBulkDto } from "./dto/admin-entry-bulk.dto";
 import { AdminEntryDto } from "./dto/admin-entry.dto";
 
@@ -48,5 +49,11 @@ export class AdminEntriesController {
   @Patch("entries/:id")
   update(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminEntryDto, @Req() req: Request) {
     return this.service.update(id, dto, req.admin!.userId);
+  }
+
+  // Lie le participant à une fiche athlète (saisie d'un combat).
+  @Put("entries/:id/athlete")
+  linkAthlete(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminEntryAthleteDto, @Req() req: Request) {
+    return this.service.linkAthlete(id, dto.externalAthleteId, req.admin!.userId);
   }
 }
