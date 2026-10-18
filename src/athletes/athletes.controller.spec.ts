@@ -16,7 +16,7 @@ import { authCookieHeader, signTestToken, testJwtModule } from "../test-utils/au
 // athlete désormais.
 describe("AthletesController (HTTP)", () => {
   let app: INestApplication;
-  let service: { create: jest.Mock; findOne: jest.Mock; updateCondition: jest.Mock };
+  let service: { create: jest.Mock; findOne: jest.Mock; updateCondition: jest.Mock; updateMeasurements: jest.Mock };
 
   const VALID_ATHLETE_ID = "240fe60f-6e74-46ea-87a0-45872bd1f4fe";
   const OTHER_ATHLETE_ID = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -25,7 +25,7 @@ describe("AthletesController (HTTP)", () => {
   let otherAthleteAuthCookie: string;
 
   beforeEach(async () => {
-    service = { create: jest.fn(), findOne: jest.fn(), updateCondition: jest.fn() };
+    service = { create: jest.fn(), findOne: jest.fn(), updateCondition: jest.fn(), updateMeasurements: jest.fn() };
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: [testJwtModule()],
@@ -128,6 +128,35 @@ describe("AthletesController (HTTP)", () => {
         .expect(200);
       expect(res.body.status).toBe("blesse");
       expect(service.updateCondition).toHaveBeenCalledWith(VALID_ATHLETE_ID, "user-1", { status: "blesse", note: "Cheville" });
+    });
+  });
+
+  describe("PUT /athletes/:id/measurements", () => {
+    const url = `/athletes/${VALID_ATHLETE_ID}/measurements`;
+
+    it("sans authentification -> 401 ; mensurations d'un AUTRE athlète -> 403", async () => {
+      await request(app.getHttpServer()).put(url).send({ tailleCm: 178 }).expect(401);
+      await request(app.getHttpServer()).put(url).set("Cookie", otherAthleteAuthCookie).send({ tailleCm: 178 }).expect(403);
+      expect(service.updateMeasurements).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["taille trop petite", { tailleCm: 99 }],
+      ["taille trop grande", { tailleCm: 251 }],
+      ["taille décimale", { tailleCm: 178.5 }],
+      ["taille en texte", { tailleCm: "178" }],
+      ["longueur de bras hors bornes", { longueurBrasCm: 131 }],
+      ["champ inconnu", { poids: 70 }],
+    ])("%s -> 400", async (_label, body) => {
+      await request(app.getHttpServer()).put(url).set("Cookie", authCookie).send(body).expect(400);
+      expect(service.updateMeasurements).not.toHaveBeenCalled();
+    });
+
+    it("propriétaire -> 200 ; null accepté (non renseigné)", async () => {
+      service.updateMeasurements.mockResolvedValue({ tailleCm: 178, longueurBrasCm: null });
+      const res = await request(app.getHttpServer()).put(url).set("Cookie", authCookie).send({ tailleCm: 178, longueurBrasCm: null }).expect(200);
+      expect(res.body).toEqual({ tailleCm: 178, longueurBrasCm: null });
+      expect(service.updateMeasurements).toHaveBeenCalledWith(VALID_ATHLETE_ID, { tailleCm: 178, longueurBrasCm: null });
     });
   });
 

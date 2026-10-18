@@ -10,6 +10,7 @@ import { Prisma } from "../../generated/prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAthleteDto } from "./dto/create-athlete.dto";
 import { UpdateAthleteConditionDto } from "./dto/update-athlete-condition.dto";
+import { UpdateAthleteMeasurementsDto } from "./dto/update-athlete-measurements.dto";
 import { ACTIVE_CONDITION, ATHLETE_CONDITION_LABELS, AthleteCondition, todayInParis } from "./athlete-condition";
 import { NotificationsRepository } from "../notifications/notifications.repository";
 import { formatTrainingDate, toNotificationRows } from "../notifications/notifications.util";
@@ -167,6 +168,24 @@ export class AthletesService {
         app_user: { select: SAFE_USER_SELECT },
       },
     });
+  }
+
+  // PUT = état complet : absent ou null -> non renseigné. Valeurs bornées
+  // par UpdateAthleteMeasurementsDto (cm entiers).
+  async updateMeasurements(athleteId: string, dto: UpdateAthleteMeasurementsDto) {
+    try {
+      const updated = await this.prisma.athlete.update({
+        where: { id: athleteId },
+        data: { taille_cm: dto.tailleCm ?? null, longueur_bras_cm: dto.longueurBrasCm ?? null, updated_at: new Date() },
+        select: { taille_cm: true, longueur_bras_cm: true },
+      });
+      return { tailleCm: updated.taille_cm, longueurBrasCm: updated.longueur_bras_cm };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+        throw new NotFoundException(`Athlete ${athleteId} introuvable`);
+      }
+      throw error;
+    }
   }
 
   async findOne(id: string) {
