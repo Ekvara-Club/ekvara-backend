@@ -47,6 +47,11 @@ model athlete {
   grade                         String?                         @db.VarChar(100)
   date_naissance                DateTime?                       @db.Date
   niveau_sportif                String?                         @db.VarChar(50)
+  // Mensurations déclarées par l'athlète lui-même (PUT /athletes/:id/measurements),
+  // en cm entiers, visibles par ses coachs. Valeur actuelle seulement (pas
+  // d'historique) ; NULL = non renseigné, jamais une valeur devinée.
+  taille_cm                     Int?                            @db.SmallInt
+  longueur_bras_cm              Int?                            @db.SmallInt
   // État de forme déclaré par l'athlète lui-même (PUT /athletes/:id/condition),
   // visible par ses coachs. Convention varchar contrôlée en application
   // (ATHLETE_CONDITIONS), jamais un enum Prisma : "actif" | "malade" |
@@ -197,12 +202,21 @@ model competition_entry {
   league           String? @db.VarChar(255)
   country          String? @db.VarChar(100)
 
+  // Fiche athlète (external_athlete) du participant, renseignée uniquement
+  // quand l'administrateur l'a choisi explicitement dans la base (EkvaraAdmin,
+  // ajout « depuis la base ») — jamais déduite d'un nom. Permet de proposer
+  // les participants d'une catégorie lors de la saisie d'un combat. NULL pour
+  // les inscrits importés et les saisies libres.
+  external_athlete_id String?           @db.Uuid
+  external_athlete    external_athlete? @relation(fields: [external_athlete_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
   created_at DateTime? @default(now()) @db.Timestamp(6)
   updated_at DateTime? @default(now()) @db.Timestamp(6)
 
   @@unique([competition_id, source, participant_name, source_category_raw_label])
   @@index([competition_id])
   @@index([competition_id, weight_category])
+  @@index([external_athlete_id])
 }
 
 // Athlète PUBLIC/international, tel que connu d'une source externe (pour
@@ -234,6 +248,7 @@ model external_athlete {
   matches_as_b competition_match[]       @relation("match_athlete_b")
   matches_won  competition_match[]       @relation("match_winner")
   athlete_links athlete_wt_link[]
+  entries      competition_entry[]
 }
 
 // Lien entre un compte EKVARA (athlete) et SON profil public World Taekwondo

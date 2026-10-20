@@ -31,7 +31,7 @@ describe("Participants et combats (HTTP)", () => {
 
   beforeEach(async () => {
     const ok = () => jest.fn().mockResolvedValue({ ok: true });
-    entries = { list: ok(), previewCreate: ok(), create: ok(), previewUpdate: ok(), update: ok() };
+    entries = { list: ok(), previewCreate: ok(), create: ok(), previewBulk: ok(), createBulk: ok(), previewUpdate: ok(), update: ok(), linkAthlete: ok() };
     matches = { summary: ok(), listCategory: ok(), previewCreate: ok(), create: ok(), get: ok(), previewUpdate: ok(), update: ok() };
     const adminJwt = createAdminJwtService(TEST_JWT_SECRET);
     const sessions = new InMemoryAdminSessions();
@@ -109,9 +109,57 @@ describe("Participants et combats (HTTP)", () => {
     ["catégorie manquante", { participantName: "Emma" }],
     ["genre hors convention", { ...ENTRY, gender: "F" }],
     ["champ inconnu (compte EKVARA)", { ...ENTRY, athleteId: ATHLETE_A }],
+    ["fiche athlète non UUID", { ...ENTRY, externalAthleteId: "kim" }],
   ])("participant : %s -> 400", async (_label, body) => {
     await postEntry(body).expect(400);
     expect(entries.create).not.toHaveBeenCalled();
+  });
+
+  const postBulk = (body: object, path = "bulk") =>
+    http().post(`/admin/competitions/${COMPETITION_ID}/entries/${path}`).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send(body);
+
+  it("ajout groupé : session et jeton CSRF exigés", async () => {
+    await http().post(`/admin/competitions/${COMPETITION_ID}/entries/bulk`).send({ entries: [ENTRY] }).expect(401);
+    await http().post(`/admin/competitions/${COMPETITION_ID}/entries/bulk`).set("Cookie", cookie).send({ entries: [ENTRY] }).expect(403);
+    await http().post(`/admin/competitions/${COMPETITION_ID}/entries/bulk/preview`).set("Cookie", cookie).send({ entries: [ENTRY] }).expect(403);
+    expect(entries.createBulk).not.toHaveBeenCalled();
+    expect(entries.previewBulk).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["liste absente", {}],
+    ["liste vide", { entries: [] }],
+    ["plus de 200 lignes", { entries: Array.from({ length: 201 }, (_, i) => ({ ...ENTRY, participantName: `Athlète ${i}` })) }],
+    ["ligne sans catégorie", { entries: [ENTRY, { participantName: "Emma" }] }],
+    ["ligne avec un genre hors convention", { entries: [{ ...ENTRY, gender: "F" }] }],
+    ["ligne avec un champ inconnu (compte EKVARA)", { entries: [{ ...ENTRY, athleteId: ATHLETE_A }] }],
+    ["champ inconnu au niveau du lot", { entries: [ENTRY], competitionId: COMPETITION_ID }],
+  ])("ajout groupé : %s -> 400", async (_label, body) => {
+    await postBulk(body).expect(400);
+    await postBulk(body, "bulk/preview").expect(400);
+    expect(entries.createBulk).not.toHaveBeenCalled();
+    expect(entries.previewBulk).not.toHaveBeenCalled();
+  });
+
+  it("ajout groupé : chaque ligne est normalisée comme une saisie unitaire (espaces, inconnu -> null)", async () => {
+    await postBulk({ entries: [{ participantName: "  Emma   DUBOIS ", category: " Seniors F  -57kg", club: "  " }] }).expect(201);
+    expect(entries.createBulk).toHaveBeenCalledWith(
+      COMPETITION_ID,
+      { entries: [expect.objectContaining({ participantName: "Emma DUBOIS", category: "Seniors F -57kg", club: null })] },
+      ADMIN_ID,
+    );
+    await postBulk({ entries: [ENTRY] }, "bulk/preview").expect(200);
+    expect(entries.previewBulk).toHaveBeenCalledWith(COMPETITION_ID, { entries: [expect.objectContaining(ENTRY)] });
+  });
+
+  it("association participant -> fiche : CSRF exigé, identifiant validé, service appelé avec la fiche", async () => {
+    const url = `/admin/entries/${COMPETITION_ID}/athlete`;
+    await http().put(url).set("Cookie", cookie).send({ externalAthleteId: ATHLETE_A }).expect(403);
+    await http().put(url).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send({ externalAthleteId: "kim" }).expect(400);
+    await http().put(url).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send({}).expect(400);
+    expect(entries.linkAthlete).not.toHaveBeenCalled();
+    await http().put(url).set("Cookie", cookie).set(ADMIN_CSRF_HEADER, CSRF).send({ externalAthleteId: ATHLETE_A }).expect(200);
+    expect(entries.linkAthlete).toHaveBeenCalledWith(COMPETITION_ID, ATHLETE_A, ADMIN_ID);
   });
 
   it("liste des combats d'une catégorie : paramètre requis et borné", async () => {

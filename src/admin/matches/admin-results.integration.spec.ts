@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { BadRequestException, ConflictException, ForbiddenException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, ValidationPipe } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CompetitionEntriesRepository } from "../../competitions/competition-entries.repository";
 import { CompetitionEntriesService } from "../../competitions/competition-entries.service";
@@ -11,6 +11,7 @@ import { AdminAuditLogger } from "../admin-audit.logger";
 import { MANUAL_SOURCE } from "../competitions/admin-competition-origin";
 import { AdminEntriesRepository } from "../entries/admin-entries.repository";
 import { AdminEntriesService } from "../entries/admin-entries.service";
+import { AdminEntryDto } from "../entries/dto/admin-entry.dto";
 import { AdminMatchesRepository } from "./admin-matches.repository";
 import { AdminMatchesService } from "./admin-matches.service";
 
@@ -134,6 +135,147 @@ describeOnTestDatabase("Participants et combats EkvaraAdmin (intégration Postgr
       expect(result.removed).toBeGreaterThan(0);
       expect(await prisma.competition_entry.count({ where: { competition_id: competitionId, source: "martial_events" } })).toBe(0);
       expect(await prisma.competition_entry.findUnique({ where: { id: manual.id } })).not.toBeNull();
+    });
+
+    describe("ajout groupé", () => {
+      const countManual = () => prisma.competition_entry.count({ where: { competition_id: competitionId, source: MANUAL_SOURCE } });
+
+      it("prévisualisation : statut par ligne (prêt / à confirmer / bloqué, y compris doublon interne à la liste), aucune écriture", async () => {
+        const existing = await entries.create(competitionId, { participantName: `${RUN} Bulk EXISTANT`, category: "Seniors M -74kg" }, ADMIN_ID);
+        const before = await countManual();
+        const preview = await entries.previewBulk(competitionId, {
+          entries: [
+            { participantName: `${RUN} Bulk ALPHA`, category: "Seniors M -74kg", country: "France" },
+            { participantName: `${RUN} Bulk EXISTANT`, category: "Seniors M -74kg" },
+            { participantName: `${RUN} EXISTANT Bulk`, category: "Juniors M -74kg" },
+            { participantName: `${RUN} alpha  BULK`, category: "seniors m -74KG" },
+          ],
+        });
+        expect(preview).toMatchObject({ total: 4, ready: 1, needsConfirmation: 1, blocked: 2 });
+        expect(preview.lines[0]).toMatchObject({ index: 0, blocking: null, candidates: [], data: { country: "France" } });
+        expect(preview.lines[1].blocking).toContain("déjà inscrit");
+        expect(preview.lines[2]).toMatchObject({ blocking: null, candidates: [expect.objectContaining({ id: existing.id, level: "possible" })] });
+        expect(preview.lines[3].blocking).toContain("ligne 1");
+        expect(await countManual()).toBe(before);
+      });
+
+      it("tout ou rien : une ligne bloquée ou non confirmée refuse le lot entier (409, aucune ligne créée)", async () => {
+        const existing = await entries.create(competitionId, { participantName: `${RUN} Bulk BETA`, category: "Cadets F -47kg" }, ADMIN_ID);
+        const before = await countManual();
+        const fresh = { participantName: `${RUN} Bulk GAMMA`, category: "Cadets F -47kg" };
+
+        const blocked = await entries
+          .createBulk(competitionId, { entries: [fresh, { participantName: `${RUN} Bulk BETA`, category: "Cadets F -47kg" }] }, ADMIN_ID)
+          .catch((e: unknown) => e);
+        expect(blocked).toBeInstanceOf(ConflictException);
+        expect((blocked as ConflictException).getResponse()).toMatchObject({ blocking: true, lines: [expect.objectContaining({ index: 1 })] });
+
+        const unconfirmed = await entries
+          .createBulk(competitionId, { entries: [fresh, { participantName: `${RUN} BETA Bulk`, category: "Cadets F -52kg" }] }, ADMIN_ID)
+          .catch((e: unknown) => e);
+        expect(unconfirmed).toBeInstanceOf(ConflictException);
+        expect((unconfirmed as ConflictException).getResponse()).toMatchObject({ lines: [expect.objectContaining({ index: 1, candidates: [expect.objectContaining({ id: existing.id })] })] });
+        expect(await countManual()).toBe(before);
+
+        const created = await entries.createBulk(
+          competitionId,
+          { entries: [fresh, { participantName: `${RUN} BETA Bulk`, category: "Cadets F -52kg", acknowledgedDuplicateIds: [existing.id] }] },
+          ADMIN_ID,
+        );
+        expect(created.total).toBe(2);
+        expect(created.items.map((e) => e.origin)).toEqual(["manual", "manual"]);
+        expect(await countManual()).toBe(before + 2);
+      });
+
+      it("contrainte unique violée en cours de transaction (écriture concurrente) : lot entier annulé", async () => {
+        const before = await countManual();
+        const repository = new AdminEntriesRepository(prisma);
+        const row = { age_category: null, gender: null, weight_category: null, club: null, country: null, external_athlete_id: null };
+        await expect(
+          repository.createMany(competitionId, [
+            { ...row, participant_name: `${RUN} Bulk DELTA`, source_category_raw_label: "Minimes M -38kg" },
+            { ...row, participant_name: `${RUN} Bulk DELTA`, source_category_raw_label: "Minimes M -38kg" },
+          ]),
+        ).rejects.toMatchObject({ code: "P2002" });
+        expect(await countManual()).toBe(before);
+      });
+    });
+
+    describe("lien participant -> fiche athlète", () => {
+      it("lien enregistré et renvoyé ; même fiche deux fois dans une catégorie bloquée (base et lot) ; fiche inconnue bloquée", async () => {
+        const linked = await entries.create(
+          competitionId,
+          { participantName: `${RUN} Athlete A`, category: "Men -80kg", externalAthleteId: athlete.a },
+          ADMIN_ID,
+        );
+        expect(linked.athlete).toEqual({ id: athlete.a, displayName: `${RUN} Athlete A`, countryCode: null });
+        expect((await entries.list(competitionId)).items.find((e) => e.id === linked.id)?.athlete?.id).toBe(athlete.a);
+
+        // Même fiche, même catégorie (casse ignorée), autre nom saisi : bloqué.
+        const twice = await entries.previewCreate(competitionId, { participantName: `${RUN} Autre nom`, category: "men -80KG", externalAthleteId: athlete.a });
+        expect(twice.blocking).toBe("Cet athlète est déjà inscrit dans cette catégorie");
+        // Autre catégorie : autorisé.
+        expect((await entries.previewCreate(competitionId, { participantName: `${RUN} Autre nom`, category: "Men -87kg", externalAthleteId: athlete.a })).blocking).toBeNull();
+
+        const unknown = await entries.previewCreate(competitionId, {
+          participantName: `${RUN} Fantome`,
+          category: "Men -80kg",
+          externalAthleteId: "00000000-0000-4000-8000-000000000000",
+        });
+        expect(unknown.blocking).toContain("Fiche athlète introuvable");
+
+        const bulk = await entries.previewBulk(competitionId, {
+          entries: [
+            { participantName: `${RUN} Nom un`, category: "Men -87kg", externalAthleteId: athlete.b },
+            { participantName: `${RUN} Nom deux`, category: "Men -87kg", externalAthleteId: athlete.b },
+          ],
+        });
+        expect(bulk.lines[0].blocking).toBeNull();
+        expect(bulk.lines[1].blocking).toContain("ligne 1");
+      });
+
+      it("association a posteriori (saisie d'un combat) : participant manuel ou importé, données intactes, contrôles", async () => {
+        const manual = await entries.create(competitionId, { participantName: `${RUN} Lien manuel`, category: "Men -58kg", club: "Club M" }, ADMIN_ID);
+        const imported = await prisma.competition_entry.create({
+          data: { competition_id: competitionId, source: "martial_events", participant_name: `${RUN} Lien importe`, source_category_raw_label: "Men -58kg", club: "Club I" },
+        });
+
+        const linked = await entries.linkAthlete(manual.id, athlete.d, ADMIN_ID);
+        expect(linked).toMatchObject({ athlete: { id: athlete.d }, club: "Club M", participantName: `${RUN} Lien manuel` });
+        // Même fiche pour un autre participant de la catégorie : refusé.
+        await expect(entries.linkAthlete(imported.id, athlete.d, ADMIN_ID)).rejects.toBeInstanceOf(ConflictException);
+        await expect(entries.linkAthlete(imported.id, "00000000-0000-4000-8000-000000000000", ADMIN_ID)).rejects.toBeInstanceOf(BadRequestException);
+
+        const importedLinked = await entries.linkAthlete(imported.id, athlete.e, ADMIN_ID);
+        expect(importedLinked).toMatchObject({ athlete: { id: athlete.e }, origin: "imported", club: "Club I" });
+        const row = await prisma.competition_entry.findUniqueOrThrow({ where: { id: imported.id } });
+        expect(row).toMatchObject({ source: "martial_events", participant_name: `${RUN} Lien importe`, club: "Club I", external_athlete_id: athlete.e });
+      });
+
+      it("modification : le lien est conservé s'il est renvoyé ou absent, retiré seulement par null explicite", async () => {
+        const created = await entries.create(
+          competitionId,
+          { participantName: `${RUN} Athlete C`, category: "Men -74kg", externalAthleteId: athlete.c },
+          ADMIN_ID,
+        );
+        const kept = await entries.update(created.id, { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Club", externalAthleteId: athlete.c }, ADMIN_ID);
+        expect(kept.athlete?.id).toBe(athlete.c);
+
+        // Non-régression : un PATCH sans externalAthleteId (corps HTTP passé
+        // par le ValidationPipe de main.ts) ne supprime pas le lien.
+        const pipe = new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true });
+        const withoutLink = (await pipe.transform(
+          { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Autre club" },
+          { type: "body", metatype: AdminEntryDto },
+        )) as AdminEntryDto;
+        expect((await entries.previewUpdate(created.id, withoutLink)).changedFields).toEqual(["club"]);
+        const absent = await entries.update(created.id, withoutLink, ADMIN_ID);
+        expect(absent).toMatchObject({ club: "Autre club", athlete: { id: athlete.c } });
+        expect((await prisma.competition_entry.findUniqueOrThrow({ where: { id: created.id } })).external_athlete_id).toBe(athlete.c);
+
+        const removed = await entries.update(created.id, { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Autre club", externalAthleteId: null }, ADMIN_ID);
+        expect(removed.athlete).toBeNull();
+      });
     });
   });
 

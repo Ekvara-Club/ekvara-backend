@@ -1,7 +1,9 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
 import { AdminGuard } from "../admin.guard";
 import { AdminEntriesService } from "./admin-entries.service";
+import { AdminEntryAthleteDto } from "./dto/admin-entry-athlete.dto";
+import { AdminEntryBulkDto } from "./dto/admin-entry-bulk.dto";
 import { AdminEntryDto } from "./dto/admin-entry.dto";
 
 // Participants (competition_entry) d'une compétition. AdminGuard sur TOUTES
@@ -27,6 +29,17 @@ export class AdminEntriesController {
     return this.service.create(competitionId, dto, req.admin!.userId);
   }
 
+  @Post("competitions/:competitionId/entries/bulk/preview")
+  @HttpCode(HttpStatus.OK)
+  previewBulk(@Param("competitionId", ParseUUIDPipe) competitionId: string, @Body() dto: AdminEntryBulkDto) {
+    return this.service.previewBulk(competitionId, dto);
+  }
+
+  @Post("competitions/:competitionId/entries/bulk")
+  createBulk(@Param("competitionId", ParseUUIDPipe) competitionId: string, @Body() dto: AdminEntryBulkDto, @Req() req: Request) {
+    return this.service.createBulk(competitionId, dto, req.admin!.userId);
+  }
+
   @Post("entries/:id/preview")
   @HttpCode(HttpStatus.OK)
   previewUpdate(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminEntryDto) {
@@ -36,5 +49,11 @@ export class AdminEntriesController {
   @Patch("entries/:id")
   update(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminEntryDto, @Req() req: Request) {
     return this.service.update(id, dto, req.admin!.userId);
+  }
+
+  // Lie le participant à une fiche athlète (saisie d'un combat).
+  @Put("entries/:id/athlete")
+  linkAthlete(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminEntryAthleteDto, @Req() req: Request) {
+    return this.service.linkAthlete(id, dto.externalAthleteId, req.admin!.userId);
   }
 }

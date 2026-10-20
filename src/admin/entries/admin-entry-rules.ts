@@ -2,8 +2,9 @@ import { nameTokens } from "../athletes/admin-athlete-rules";
 import { MANUAL_SOURCE } from "../competitions/admin-competition-origin";
 
 // Participants (competition_entry) saisis dans EkvaraAdmin. Un participant
-// est une INSCRIPTION à une compétition : jamais un compte EKVARA, jamais
-// relié à external_athlete (le modèle ne porte aucun lien, volontairement).
+// est une INSCRIPTION à une compétition : jamais un compte EKVARA. Il n'est
+// relié à une fiche external_athlete que si l'administrateur l'a choisie
+// explicitement dans la base (external_athlete_id) — jamais par le nom.
 
 export type EntryOrigin = "manual" | "imported";
 
@@ -21,6 +22,7 @@ export interface ExistingEntry {
   club: string | null;
   country: string | null;
   source: string;
+  external_athlete_id?: string | null;
 }
 
 export interface EntryDuplicateCandidate {

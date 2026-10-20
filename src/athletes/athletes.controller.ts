@@ -7,6 +7,7 @@ import { AthleteOwnershipGuard } from "../auth/athlete-ownership.guard";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { AthletesService } from "./athletes.service";
 import { UpdateAthleteConditionDto } from "./dto/update-athlete-condition.dto";
+import { UpdateAthleteMeasurementsDto } from "./dto/update-athlete-measurements.dto";
 
 // POST /athletes (création publique, sans invitation) a été retiré (voir
 // ticket "Clubs, invitations & inscription Athlete contrôlée V1"
@@ -39,6 +40,14 @@ export class AthletesController {
     @Body() dto: UpdateAthleteConditionDto,
   ) {
     return this.athletesService.updateCondition(id, req.user!.sub, dto);
+  }
+
+  // Mensurations (taille, longueur de bras) : seul l'athlète lui-même les
+  // déclare ; ses coachs les lisent via GET /coach/athletes/:athleteId.
+  @Put(":id/measurements")
+  @UseGuards(JwtAuthGuard, AthleteOwnershipGuard)
+  updateMeasurements(@Param("id", ParseUUIDPipe) id: string, @Body() dto: UpdateAthleteMeasurementsDto) {
+    return this.athletesService.updateMeasurements(id, dto);
   }
 
   // RGPD — droit d'accès : téléchargement de toutes ses données (JSON).
