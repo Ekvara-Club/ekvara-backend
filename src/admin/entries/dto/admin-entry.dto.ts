@@ -7,7 +7,8 @@ const collapse = ({ value }: { value: unknown }) => (typeof value === "string" ?
 const trimToNull = ({ value }: { value: unknown }) => (typeof value === "string" ? value.trim().replace(/\s+/g, " ") || null : value);
 
 // Participant complet (création ET modification : la modification remplace
-// toutes les valeurs saisies). Longueurs = colonnes competition_entry.
+// toutes les valeurs saisies, sauf externalAthleteId absent qui conserve le
+// lien existant). Longueurs = colonnes competition_entry.
 export class AdminEntryDto {
   @Transform(collapse)
   @IsString()

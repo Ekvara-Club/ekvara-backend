@@ -94,7 +94,7 @@ export class AdminEntriesService {
 
   async previewUpdate(id: string, dto: AdminEntryDto) {
     const current = await this.manualEntry(id);
-    const data = toEntryData(dto);
+    const data = toUpdateData(dto, current);
     return {
       data: toFieldsView(data),
       changedFields: changedFields(current, data),
@@ -105,7 +105,7 @@ export class AdminEntriesService {
 
   async update(id: string, dto: AdminEntryDto, adminUserId: string) {
     const current = await this.manualEntry(id);
-    const data = toEntryData(dto);
+    const data = toUpdateData(dto, current);
     const fields = changedFields(current, data);
     if (fields.length === 0) return toEntryView(current);
     this.assertWritable(await this.analyse(current.competition_id, data, id), dto.acknowledgedDuplicateIds);
@@ -240,6 +240,13 @@ function toEntryData(dto: AdminEntryDto): EntryData {
     country: dto.country ?? null,
     external_athlete_id: dto.externalAthleteId ?? null,
   };
+}
+
+// Modification : le lien fiche athlète se pose aussi hors du formulaire
+// (PUT /entries/:id/athlete) ; absent = conservé, null ou vide = retiré.
+function toUpdateData(dto: AdminEntryDto, current: EntryModel): EntryData {
+  const data = toEntryData(dto);
+  return dto.externalAthleteId === undefined ? { ...data, external_athlete_id: current.external_athlete_id } : data;
 }
 
 const FIELD_COLUMNS: Record<string, keyof EntryData> = {

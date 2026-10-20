@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { BadRequestException, ConflictException, ForbiddenException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, ValidationPipe } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CompetitionEntriesRepository } from "../../competitions/competition-entries.repository";
 import { CompetitionEntriesService } from "../../competitions/competition-entries.service";
@@ -11,6 +11,7 @@ import { AdminAuditLogger } from "../admin-audit.logger";
 import { MANUAL_SOURCE } from "../competitions/admin-competition-origin";
 import { AdminEntriesRepository } from "../entries/admin-entries.repository";
 import { AdminEntriesService } from "../entries/admin-entries.service";
+import { AdminEntryDto } from "../entries/dto/admin-entry.dto";
 import { AdminMatchesRepository } from "./admin-matches.repository";
 import { AdminMatchesService } from "./admin-matches.service";
 
@@ -251,7 +252,7 @@ describeOnTestDatabase("Participants et combats EkvaraAdmin (intégration Postgr
         expect(row).toMatchObject({ source: "martial_events", participant_name: `${RUN} Lien importe`, club: "Club I", external_athlete_id: athlete.e });
       });
 
-      it("modification : le lien est conservé s'il est renvoyé, retiré sinon", async () => {
+      it("modification : le lien est conservé s'il est renvoyé ou absent, retiré seulement par null explicite", async () => {
         const created = await entries.create(
           competitionId,
           { participantName: `${RUN} Athlete C`, category: "Men -74kg", externalAthleteId: athlete.c },
@@ -259,7 +260,20 @@ describeOnTestDatabase("Participants et combats EkvaraAdmin (intégration Postgr
         );
         const kept = await entries.update(created.id, { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Club", externalAthleteId: athlete.c }, ADMIN_ID);
         expect(kept.athlete?.id).toBe(athlete.c);
-        const removed = await entries.update(created.id, { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Club" }, ADMIN_ID);
+
+        // Non-régression : un PATCH sans externalAthleteId (corps HTTP passé
+        // par le ValidationPipe de main.ts) ne supprime pas le lien.
+        const pipe = new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true });
+        const withoutLink = (await pipe.transform(
+          { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Autre club" },
+          { type: "body", metatype: AdminEntryDto },
+        )) as AdminEntryDto;
+        expect((await entries.previewUpdate(created.id, withoutLink)).changedFields).toEqual(["club"]);
+        const absent = await entries.update(created.id, withoutLink, ADMIN_ID);
+        expect(absent).toMatchObject({ club: "Autre club", athlete: { id: athlete.c } });
+        expect((await prisma.competition_entry.findUniqueOrThrow({ where: { id: created.id } })).external_athlete_id).toBe(athlete.c);
+
+        const removed = await entries.update(created.id, { participantName: `${RUN} Athlete C`, category: "Men -74kg", club: "Autre club", externalAthleteId: null }, ADMIN_ID);
         expect(removed.athlete).toBeNull();
       });
     });
